@@ -1,6 +1,6 @@
 # One repository, two developers
 
-Repository owner: `UrwaSultana320`. Abdullah's confirmed GitHub username is `abdullahsheikhdeveloper-ops`. A Write-access invitation has been sent; acceptance is pending.
+Repository owner: `UrwaSultana320`. Abdullah's confirmed GitHub username is `abdullahsheikhdeveloper-ops`. GitHub's collaborator-permission API confirmed Write access on 2026-10-29.
 
 ## Abdullah's onboarding
 
@@ -28,7 +28,7 @@ npx.cmd playwright install chromium
 npm.cmd run test:e2e
 ```
 
-Open a PR into the remote default branch; keep unfinished work in draft. Request and obtain approval from the other developer before merging. Urwa requests `abdullahsheikhdeveloper-ops` once his invitation is accepted; Abdullah requests `UrwaSultana320`. If the teammate cannot review yet, the PR waits. Prefer squash merges and resolve conversations. Agents must not merge autonomously or enable auto-merge. Never bypass failed tests or treat uncertain OCR as a verified item. CODEOWNERS currently lists Urwa; this does not replace teammate approval on Urwa's own PRs.
+Open a PR into the remote default branch; keep unfinished work in draft. Request and obtain approval from the other developer before merging. Urwa requests `abdullahsheikhdeveloper-ops`; Abdullah requests `UrwaSultana320`. If the teammate cannot review yet, the PR waits. Prefer squash merges and resolve conversations. Agents must not merge autonomously or enable auto-merge. Never bypass failed tests or treat uncertain OCR as a verified item. CODEOWNERS currently lists Urwa; this does not replace teammate approval on Urwa's own PRs.
 
 Record actual command results, baseline failures and blocked/not-run checks in the PR. Browser tests with simulated inputs are not physical-device validation. Report real iPhone/VoiceOver, Android/TalkBack, Windows screen-reader, camera/microphone, physical-package and identical-unit tests as NOT RUN unless performed; include outstanding cases in the handoff.
 
