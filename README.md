@@ -54,7 +54,7 @@ Controls have visible labels, keyboard focus, large touch areas, semantic headin
 
 ## Collaboration and deployment
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/roadmap.md](docs/roadmap.md). Both developers use separate clones of one private repository. Use `dev-urwa` for frontend/accessibility and `dev-abdullah` for backend/recognition/verification. Submit reviewed, tested PRs to main. No secrets or customer files in Git.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/roadmap.md](docs/roadmap.md). Both developers use separate clones of one private repository. Create a separate `urwa/<task>` or `abdullah/<task>` feature branch for every task, commit and push progress there, and open a PR into the remote default branch (`main` currently). Keep unfinished work in draft. Never commit or push directly to main/master. Require the other developer's approval and passing existing checks; agents never merge autonomously. Preserve existing developer branches and all local/remote work. No force-pushing shared history, secrets or customer files in Git. The final hackathon release requires explicit user approval before creation, tagging, publication or deployment.
 
 Vercel-compatible: import the same GitHub repo in Vercel, choose Next.js, use Node 24, and deploy. No environment variables are required. This task prepares deployment but does not provision an unrelated hosting repository. CI includes build, lint, type checking, Vitest, Playwright and axe. Branch protection requires repository permissions and a GitHub plan supporting protection for private repositories; see setup-status.json for the actual outcome.
 

@@ -4,7 +4,7 @@
   "owner": "UrwaSultana320",
   "partner": "abdullahsheikhdeveloper-ops",
   "invitation": "Write invitation sent; acceptance pending.",
-  "protection": "Unavailable: gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403) {\"message\":\"Upgrade to GitHub Pro or make this repository public to enable this feature.\",\"documentation_url\":\"https://docs.github.com/rest/branches/branch-protection#update-branch-protection\",\"status\":\"403\"}",
-  "updated": "2026-10-29T18:04:30.7444984+05:00",
+  "protection": "Unavailable: direct authenticated GitHub API GET for main protection returned HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this feature. Integration access independently returned Resource not accessible by integration. No plan purchase, visibility change or protection modification performed.",
+  "updated": "2026-10-29T19:45:33.8473773+05:00",
   "invitationId": 340374856
 }

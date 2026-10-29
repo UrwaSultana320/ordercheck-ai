@@ -1,9 +1,9 @@
 name: Build and test
 on:
   push:
-    branches: [main, dev-urwa, dev-abdullah]
+    branches: [main, master, dev-urwa, dev-abdullah, 'urwa/**', 'abdullah/**']
   pull_request:
-    branches: [main]
+    branches: [main, master]
 permissions:
   contents: read
 jobs:
