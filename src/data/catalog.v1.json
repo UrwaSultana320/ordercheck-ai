@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "note": "Illustrative demonstration catalog. Demo codes are not manufacturer GTINs. Add retailer-verified codes before real deliveries.",
+  "products": [
+    {
+      "id": "oat-original-1l",
+      "name": "Oat drink",
+      "brand": "Everyday",
+      "variant": "Original",
+      "size": "1 L",
+      "barcodes": ["DEMO-OAT-ORIGINAL-1L"]
+    },
+    {
+      "id": "oat-unsweetened-1l",
+      "name": "Oat drink",
+      "brand": "Everyday",
+      "variant": "Unsweetened",
+      "size": "1 L",
+      "barcodes": ["DEMO-OAT-UNSWEETENED-1L"]
+    },
+    {
+      "id": "tea-green-100g",
+      "name": "Green tea",
+      "brand": "Garden",
+      "variant": "Jasmine",
+      "size": "100 g",
+      "barcodes": ["DEMO-TEA-JASMINE-100G"]
+    },
+    {
+      "id": "rice-brown-1kg",
+      "name": "Brown rice",
+      "brand": "Harvest",
+      "variant": "Wholegrain",
+      "size": "1 kg",
+      "barcodes": ["DEMO-RICE-BROWN-1KG"]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+.env*
+!.env.example
+playwright-report/
+test-results/
+coverage/
+*.tsbuildinfo
+.vercel/
+
+public/pdf.worker.min.mjs
+lint-results.json
