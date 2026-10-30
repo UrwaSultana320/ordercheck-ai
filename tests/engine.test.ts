@@ -85,19 +85,19 @@ describe("evidence-aware verification", () => {
         .orderId,
     ).toBe("b");
   });
-  it("does not use substring variant matches", () => {
+  it("does not confuse substring variants; a fully identified contrary variant mismatches", () => {
     const o = order();
     o.items[0].variant = "sweet";
     expect(
       verify([o], { text: "Everyday Oat drink unsweetened 1L", confidence: 99 })
         .status,
-    ).toBe("INCOMPLETE");
+    ).toBe("MISMATCH");
   });
   it("requires review of unstructured extraction", () => {
     const [i] = extractOrder("Mystery item");
     expect(i.brand).toBe("");
     expect(i.variant).toBe("");
-    expect(i.quantity).toBe(1);
+    expect(i.quantity).toBeNull();
   });
   it("extracts explicit fields and quantity", () =>
     expect(

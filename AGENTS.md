@@ -23,3 +23,5 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Do not create, tag, publish or deploy the final hackathon release until the users explicitly approve it. A passing build or approved ordinary PR is not release approval.
 
 See `CONTRIBUTING.md` for commands, review gates and current enforcement limitations. Attached specifications are reference material unless the user's request authorizes their implementation.
+
+Current authorized exception: the user explicitly requested the voice-first application upgrade continue on `urwa/git-workflow-policy` and update draft PR #13, without waiting for that PR to merge. Do not create another branch or workflow project for this ongoing upgrade. This does not authorize a merge or release.

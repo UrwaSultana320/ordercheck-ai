@@ -1,556 +1,414 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowRight,
   AudioLines,
-  Check,
   CheckCheck,
-  ChevronRight,
   CircleHelp,
   FileText,
-  Headphones,
   Package,
-  Plus,
   ScanLine,
+  Settings,
   ShieldCheck,
-  Upload,
-  Volume2,
-  VolumeX,
-  X,
 } from "lucide-react";
 import {
-  applyMatch,
   extractOrder,
   orderSchema,
-  sessionSchema,
-  verify,
+  userStatus,
   type Item,
   type Order,
-  type Evidence,
-  type Verdict,
 } from "@/lib/engine";
-import { readImage, readImport } from "@/lib/media";
-type Tab = "overview" | "orders" | "scan" | "help";
+import { readImport } from "@/lib/media";
+import { newId } from "@/lib/id";
+import { useAssistant, type Tab, type Preferences } from "@/lib/use-assistant";
+import { commandAllowed } from "@/lib/session";
+const titles: Record<Tab, string> = {
+  overview: "Let's check your delivery",
+  orders: "Your purchase references",
+  scan: "Check your delivery",
+  help: "Help & guidance",
+  settings: "Accessibility settings",
+};
 export default function Home() {
-  const [tab, setTab] = useState<Tab>("overview");
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [voice, setVoice] = useState(true);
-  const [message, setMessage] = useState("Ready when you are.");
-  const [text, setText] = useState("");
-  const [label, setLabel] = useState("My delivery");
-  const [draft, setDraft] = useState<Item[]>([]);
-  const [importing, setImporting] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [camera, setCamera] = useState(false);
-  const [barcode, setBarcode] = useState("");
-  const [result, setResult] = useState<Verdict | null>(null);
-  const [remember, setRemember] = useState(false);
-  const [ready, setReady] = useState(false);
-  const [armed, setArmed] = useState(true);
-  const video = useRef<HTMLVideoElement>(null);
-  const controls = useRef<{ stop: () => void } | null>(null);
-  const ordersRef = useRef(orders);
-  const voiceRef = useRef(voice);
-  const armedRef = useRef(true);
-  const mounted = useRef(true);
-  const scanGeneration = useRef(0);
-  const [lastMatch, setLastMatch] = useState<Order[] | null>(null);
-  const lastScan = useRef({ code: "", at: 0 });
-  const heading = useRef<HTMLHeadingElement>(null);
+  const video = useRef<HTMLVideoElement>(null),
+    heading = useRef<HTMLHeadingElement>(null);
+  const a = useAssistant(video, heading);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [importing, setImporting] = useState(false),
+    [editing, setEditing] = useState<string | null>(null);
+  const [label, setLabel] = useState("My delivery"),
+    [source, setSource] = useState<NonNullable<Order["source"]>>("purchase");
+  const [text, setText] = useState(""),
+    [draft, setDraft] = useState<Item[]>([]),
+    [busy, setBusy] = useState(false);
+  const [barcode, setBarcode] = useState(""),
+    [manualText, setManualText] = useState(""),
+    [consent, setConsent] = useState(false);
+  const importAbort = useRef<AbortController | null>(null);
   useEffect(() => {
-    ordersRef.current = orders;
-  }, [orders]);
+    if (a.phase === "awaiting-reference")
+      queueMicrotask(() => setImporting(true));
+    if (a.phase === "paused") {
+      importAbort.current?.abort();
+      queueMicrotask(() => setBusy(false));
+    }
+  }, [a.phase]);
   useEffect(() => {
-    voiceRef.current = voice;
-  }, [voice]);
-  useEffect(() => {
-    mounted.current = true;
-    queueMicrotask(() => {
-      if (!mounted.current) return;
-      try {
-        const saved = sessionStorage.getItem("ordercheck.v1");
-        if (saved) {
-          setOrders(sessionSchema.parse(JSON.parse(saved)));
-          setRemember(true);
-        }
-      } catch {
-        sessionStorage.removeItem("ordercheck.v1");
-      }
-      setReady(true);
-    });
+    const pause = () => {
+      importAbort.current?.abort();
+      setBusy(false);
+    };
+    window.addEventListener("blur", pause);
     return () => {
-      mounted.current = false;
-      controls.current?.stop();
+      importAbort.current?.abort();
+      window.removeEventListener("blur", pause);
     };
   }, []);
-  useEffect(() => {
-    if (ready) {
-      if (remember)
-        sessionStorage.setItem("ordercheck.v1", JSON.stringify(orders));
-      else sessionStorage.removeItem("ordercheck.v1");
-    }
-  }, [orders, remember, ready]);
-  function say(s: string) {
-    setMessage(s);
-    if (voiceRef.current && "speechSynthesis" in window) {
-      speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(s);
-      utterance.rate = 0.95;
-      speechSynthesis.speak(utterance);
-    }
+  function openImport() {
+    a.navigate("orders");
+    setImporting(true);
+    setEditing(null);
+    setDraft([]);
+    setText("");
+    a.phaseTo("awaiting-reference");
   }
-  function stopCamera() {
-    scanGeneration.current++;
-    controls.current?.stop();
-    controls.current = null;
-    if (video.current?.srcObject)
-      (video.current.srcObject as MediaStream)
-        .getTracks()
-        .forEach((t) => t.stop());
-    setCamera(false);
-  }
-  function navigate(next: Tab) {
-    if (next !== "scan") stopCamera();
-    setTab(next);
-    requestAnimationFrame(() => heading.current?.focus());
-  }
-  function check(evidence: Evidence) {
-    if (!armedRef.current) return;
-    const verdict = verify(ordersRef.current, evidence);
-    setResult(verdict);
-    say(verdict.message);
-    if (verdict.status === "MATCH") {
-      setLastMatch(structuredClone(ordersRef.current));
-      const next = applyMatch(ordersRef.current, verdict);
-      ordersRef.current = next;
-      setOrders(next);
-      armedRef.current = false;
-      setArmed(false);
-      if (navigator.vibrate) navigator.vibrate(100);
-      if (next.every((o) => o.items.every((i) => i.verified === i.quantity)))
-        say(verdict.message + " All deliveries complete.");
-    }
-  }
-  async function startCamera() {
-    if (camera || controls.current) return;
-    const generation = ++scanGeneration.current;
-    setCamera(true);
-    say(
-      "Opening rear camera. Hold the package about 20 centimetres away. Slowly turn it until the barcode faces the camera.",
-    );
-    try {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser");
-      if (!mounted.current || generation !== scanGeneration.current) return;
-      const reader = new BrowserMultiFormatReader();
-      const control = await reader.decodeFromConstraints(
-        { video: { facingMode: { ideal: "environment" } }, audio: false },
-        video.current!,
-        (found) => {
-          if (
-            mounted.current &&
-            generation === scanGeneration.current &&
-            found &&
-            armedRef.current
-          ) {
-            const code = found.getText();
-            if (
-              code !== lastScan.current.code ||
-              Date.now() - lastScan.current.at > 6000
-            ) {
-              lastScan.current = { code, at: Date.now() };
-              check({ barcode: code });
-            }
-          }
-        },
-      );
-      if (!mounted.current || generation !== scanGeneration.current)
-        control.stop();
-      else controls.current = control;
-    } catch {
-      if (generation === scanGeneration.current) {
-        setCamera(false);
-        say(
-          "Camera unavailable. Allow camera access in your browser, use HTTPS or localhost, or enter a barcode below.",
-        );
-      }
-    }
-  }
-  async function ocr() {
-    if (!video.current || !camera || !video.current.videoWidth) {
-      say("Start the camera and wait for the preview before reading a label.");
-      return;
-    }
-    setBusy(true);
-    say("Reading label. Keep the package still in even lighting.");
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = video.current.videoWidth;
-      canvas.height = video.current.videoHeight;
-      canvas.getContext("2d")!.drawImage(video.current, 0, 0);
-      check(await readImage(canvas.toDataURL("image/png")));
-    } catch {
-      say("Could not read the label. Try again with more light.");
-    } finally {
-      setBusy(false);
-    }
+  function stop() {
+    importAbort.current?.abort();
+    setBusy(false);
+    a.stop();
   }
   async function upload(file?: File) {
     if (!file) return;
+    importAbort.current?.abort();
+    const abort = new AbortController();
+    importAbort.current = abort;
     setBusy(true);
-    say("Reading your order. You will review extracted details before saving.");
+    void a.announce(
+      "Reading your reference. Cancel remains available; nothing is saved yet.",
+    );
     try {
-      setText(await readImport(file));
-      say("Text extracted. Review it, then choose Extract products.");
+      const content = await readImport(file, abort.signal);
+      if (!abort.signal.aborted) {
+        setText(content);
+        void a.announce(
+          "Reference text is ready. Extract products, then review the uncertain fields.",
+        );
+      }
     } catch (e) {
-      say(
-        e instanceof Error
-          ? e.message
-          : "Could not read file. Paste the order text instead.",
-      );
+      if (!abort.signal.aborted)
+        void a.announce(
+          e instanceof Error
+            ? e.message
+            : "Could not read file. Paste text instead.",
+          3,
+        );
     } finally {
-      setBusy(false);
+      if (importAbort.current === abort) {
+        importAbort.current = null;
+        setBusy(false);
+      }
     }
   }
   function save() {
     const parsed = orderSchema.safeParse({
-      id: crypto.randomUUID(),
+      id: editing ?? newId(),
       label,
-      items: draft,
+      source,
+      items: draft.map((i) => ({ ...i, verified: 0 })),
     });
     if (!parsed.success) {
-      say(
-        "Check the order name, product names and quantities. Quantities must be whole numbers from 1 to 999.",
+      void a.announce(
+        "Check order and product names. Quantities must be whole numbers from 1 to 999, or blank if unknown.",
+        3,
       );
       return;
     }
-    setLastMatch(null);
-    setOrders((previous) => [...previous, parsed.data]);
+    a.update({
+      orders: editing
+        ? a.data.orders.map((o) => (o.id === editing ? parsed.data : o))
+        : [...a.data.orders, parsed.data],
+      attempts: a.data.attempts.map((event) =>
+        event.orderId === editing ? { ...event, undone: true } : event,
+      ),
+    });
     setDraft([]);
     setText("");
     setImporting(false);
-    say("Order saved. You can now scan your delivery.");
-    navigate("orders");
+    setEditing(null);
+    a.navigate("orders");
+    a.phaseTo("idle");
+    void a.announce(
+      "Reference saved. Start checking your delivery when ready.",
+    );
   }
-  const total = orders.reduce(
-    (n, o) => n + o.items.reduce((a, i) => a + i.quantity, 0),
-    0,
-  );
-  const complete = orders.reduce(
-    (n, o) => n + o.items.reduce((a, i) => a + i.verified, 0),
-    0,
-  );
-  const pending = orders.filter((o) =>
-    o.items.some((i) => i.verified < i.quantity),
-  );
+  const canCheck =
+    !a.pending &&
+    ![
+      "processing",
+      "announcing-result",
+      "paused",
+      "requesting-permission",
+    ].includes(a.phase);
   return (
-    <>
+    <div
+      data-text-size={a.prefs.size}
+      data-contrast={a.prefs.contrast ? "high" : "normal"}
+    >
       <a className="skip" href="#main">
         Skip to content
       </a>
       <aside className="sidebar">
-        <a className="brand" href="#main" onClick={() => navigate("overview")}>
+        <a
+          className="brand"
+          href="#main"
+          onClick={() => a.navigate("overview")}
+        >
           <span className="brand-icon">
-            <CheckCheck size={23} />
+            <CheckCheck aria-hidden="true" />
           </span>
           OrderCheck<span className="ai">AI</span>
         </a>
-        <div className="workspace">YOUR EVERYDAY ASSISTANT</div>
-        <nav aria-label="Main navigation">
+        <button
+          className="menu-toggle secondary"
+          aria-expanded={menuOpen}
+          aria-controls="primary-navigation"
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          Menu
+        </button>
+        <p className="workspace">YOUR DELIVERY ASSISTANT</p>
+        <nav
+          id="primary-navigation"
+          className={menuOpen ? "expanded" : ""}
+          aria-label="Main navigation"
+        >
           {(
             [
               ["overview", Package, "Overview"],
               ["orders", FileText, "My orders"],
               ["scan", ScanLine, "Scan a delivery"],
               ["help", CircleHelp, "Help & guidance"],
+              ["settings", Settings, "Accessibility settings"],
             ] as const
           ).map(([id, Icon, title]) => (
             <button
               key={id}
-              className={tab === id ? "nav active" : "nav"}
-              aria-current={tab === id ? "page" : undefined}
-              onClick={() => navigate(id)}
+              className={a.tab === id ? "nav active" : "nav"}
+              aria-current={a.tab === id ? "page" : undefined}
+              onClick={() => {
+                a.navigate(id);
+                setMenuOpen(false);
+              }}
             >
-              <Icon size={20} />
+              <Icon size={20} aria-hidden="true" />
               {title}
-              {id === "orders" && pending.length > 0 && (
-                <span className="badge">{pending.length}</span>
-              )}
             </button>
           ))}
         </nav>
-        <div className="sidebar-bottom">
-          <div className="privacy">
-            <ShieldCheck size={22} />
-            <strong>Your privacy comes first</strong>
-            <p>Your orders stay on this device. You’re in control.</p>
-          </div>
-          <div className="profile">
-            <span className="avatar">U</span>
-            <div>
-              <strong>Your personal space</strong>
-              <small>No account needed</small>
-            </div>
-          </div>
+        <div className="sidebar-bottom privacy">
+          <ShieldCheck aria-hidden="true" />
+          <strong>Your reference, your control</strong>
+          <p>
+            Orders stay in this tab unless you choose session storage. Speech
+            services may use a network. See Help for details.
+          </p>
         </div>
       </aside>
       <div className="shell">
         <header>
-          <span>Every delivery. A little more independent.</span>
-          <button
-            className="voice-toggle"
-            aria-pressed={voice}
-            onClick={() => {
-              setVoice(!voice);
-              voiceRef.current = !voice;
-              if (voice && "speechSynthesis" in window)
-                speechSynthesis.cancel();
-              else say("Voice guidance on.");
-            }}
-          >
-            {voice ? <Volume2 size={18} /> : <VolumeX size={18} />}Voice
-            guidance {voice ? "on" : "off"}
-            <span className={voice ? "toggle on" : "toggle"} />
-          </button>
+          <span>One package. One clear next step.</span>
+          <span>Press Escape to stop.</span>
         </header>
-        <main id="main">
+        <main id="main" tabIndex={-1}>
           <div className="page-heading">
             <div>
-              <div className="eyebrow">
-                A LITTLE CERTAINTY IN EVERY DELIVERY
-              </div>
+              <p className="eyebrow">A LITTLE CERTAINTY IN EVERY DELIVERY</p>
               <h1 ref={heading} tabIndex={-1}>
-                {tab === "overview"
-                  ? "Welcome to OrderCheck."
-                  : tab === "orders"
-                    ? "Your orders, all in one place."
-                    : tab === "scan"
-                      ? "Let’s check your delivery."
-                      : "A helping hand, whenever you need it."}
+                {titles[a.tab]}
               </h1>
               <p>
-                {tab === "overview"
-                  ? "Know what arrived. Feel confident about what’s next."
-                  : tab === "orders"
-                    ? "Review the details. We’ll take care of finding the match."
-                    : tab === "scan"
-                      ? "Point your camera at the barcode or read the full product label."
-                      : "Simple steps, spoken guidance, and you in control."}
+                Compare the product label with your purchase reference. Keep
+                uncertain results visible.
               </p>
             </div>
-            <span className="local-pill">
-              <span />
-              Private on your device
-            </span>
           </div>
-          {tab === "overview" && (
+          {a.storageError && <p role="alert">{a.storageError}</p>}
+          {a.tab === "overview" && (
             <>
               <section className="hero">
                 <div className="hero-copy">
                   <span className="mini-label">
-                    <AudioLines size={16} /> BUILT TO GUIDE YOU
+                    <AudioLines aria-hidden="true" /> AT YOUR PACE
                   </span>
-                  <h2>
-                    Your delivery.
-                    <br />
-                    Checked with confidence.
-                  </h2>
-                  <p>
-                    Import your order, scan what’s arrived, and hear whether it
-                    matches. One less thing to wonder about.
-                  </p>
                   <div className="hero-actions">
                     <button
                       className="primary"
-                      onClick={() => {
-                        navigate("orders");
-                        setImporting(true);
-                      }}
+                      disabled={!a.ready}
+                      onClick={() => void a.start()}
                     >
-                      <Plus size={19} />
-                      Import an order
-                      <ArrowRight size={18} />
+                      Start checking my delivery
                     </button>
-                    <button
-                      className="secondary"
-                      onClick={() => navigate("scan")}
-                    >
-                      <ScanLine size={19} />
-                      Scan a delivery
+                    <button className="secondary" onClick={openImport}>
+                      Add order or receipt
                     </button>
                   </div>
-                  <div className="hero-foot">
-                    <Headphones size={16} />
-                    Voice-guided. Screen-reader friendly. Made for you.
-                  </div>
+                  <h2>We’ll guide you, one item at a time.</h2>
+                  <p>
+                    Start with your purchase confirmation or enter product
+                    details. Then let the camera read each package, with
+                    readable controls at every step.
+                  </p>
+                  <p className="hero-foot">
+                    Screen-reader mode is the default. App spoken guidance is
+                    optional in Accessibility settings.
+                  </p>
                 </div>
                 <div className="parcel-scene" aria-hidden="true">
-                  <div className="orbit orbit-one" />
-                  <div className="orbit orbit-two" />
-                  <div className="spark s1">+</div>
-                  <div className="spark s2">+</div>
-                  <div className="parcel">
-                    <div className="tape" />
-                    <div className="shipping-label">
-                      <div className="label-line" />
-                      <div className="label-line short" />
-                      <div className="barcode-art" />
-                    </div>
-                    <div className="box-mark">↑ ↑</div>
-                  </div>
-                  <div className="verified-chip">
-                    <span>
-                      <Check size={19} />
-                    </span>
-                    <div>
-                      <strong>A little peace of mind</strong>
-                      <small>One scan at a time</small>
-                    </div>
-                  </div>
+                  <div className="orbit" />
+                  <Package size={100} />
                 </div>
+              </section>
+              <section
+                className="panel session-summary"
+                aria-label="Current session"
+              >
+                <h2>Current session</h2>
+                <p>{a.phase.replaceAll("-", " ")}</p>
+                <p>
+                  {a.ready
+                    ? a.data.orders.length
+                      ? `${a.stats.waiting} orders waiting. ${a.stats.unknown} lines have unknown quantities.`
+                      : "No reference yet. Paste a confirmation, enter product details, or upload an image, PDF or text file."
+                    : "Loading orders…"}
+                </p>
               </section>
               <section className="stats" aria-label="Delivery progress">
-                <div>
-                  <span className="stat-icon">
-                    <Package />
-                  </span>
-                  <div>
-                    <span>Pending orders</span>
-                    <strong>{pending.length}</strong>
-                  </div>
-                  <small>Ready to check</small>
-                </div>
-                <div>
-                  <span className="stat-icon">
-                    <ScanLine />
-                  </span>
-                  <div>
-                    <span>Items to verify</span>
-                    <strong>{total - complete}</strong>
-                  </div>
-                  <small>We’ll guide you through</small>
-                </div>
-                <div>
-                  <span className="stat-icon">
-                    <CheckCheck />
-                  </span>
-                  <div>
-                    <span>Items verified</span>
-                    <strong>{complete}</strong>
-                  </div>
-                  <small>A little more certainty</small>
-                </div>
-              </section>
-              <div className="section-title">
-                <h2>
-                  Your pending orders <span>{pending.length}</span>
-                </h2>
-                <button
-                  className="text-button"
-                  onClick={() => navigate("orders")}
-                >
-                  View all orders
-                  <ArrowRight size={16} />
-                </button>
-              </div>
-              {pending.length ? (
-                pending
-                  .slice(0, 3)
-                  .map((o) => (
-                    <OrderCard
-                      key={o.id}
-                      order={o}
-                      onScan={() => navigate("scan")}
-                    />
-                  ))
-              ) : (
-                <section className="empty">
-                  <div className="empty-icon">
-                    <Package size={30} />
-                  </div>
-                  <h3>A fresh start for your next delivery</h3>
-                  <p>
-                    Bring in an order confirmation and we’ll help you check
-                    <br className="desktop-break" /> every item when it arrives.
-                  </p>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      navigate("orders");
-                      setImporting(true);
-                    }}
-                  >
-                    Import your first order
-                    <ArrowRight size={17} />
-                  </button>
-                </section>
-              )}
-              <section className="how">
-                <div>
-                  <span className="mini-label">A SIMPLE ROUTINE</span>
-                  <h2>From doorstep to peace of mind.</h2>
-                </div>
                 {[
-                  [
-                    "01",
-                    "Bring in your order",
-                    "Paste a confirmation or upload a file.",
-                  ],
-                  [
-                    "02",
-                    "Scan what’s arrived",
-                    "Let your camera find the product details.",
-                  ],
-                  [
-                    "03",
-                    "Hear the result",
-                    "Know what matches and what needs a look.",
-                  ],
-                ].map(([n, title, desc]) => (
-                  <div className="step" key={n}>
-                    <span>{n}</span>
-                    <h3>{title}</h3>
-                    <p>{desc}</p>
+                  ["Orders waiting to be checked", a.stats.waiting],
+                  ["Items left to check", a.stats.left],
+                  ["Items checked", a.stats.checked],
+                ].map(([title, value]) => (
+                  <div key={title}>
+                    <div>
+                      <span>{title}</span>
+                      <strong>{a.ready ? value : "Loading…"}</strong>
+                    </div>
                   </div>
                 ))}
               </section>
+              <p>
+                Items are expected physical units with known quantities.{" "}
+                {a.stats.unknown} lines have unknown quantities.{" "}
+                {a.stats.matched} matching · {a.stats.mismatch} mismatching ·{" "}
+                {a.stats.unresolved} unable to verify · {a.stats.unassigned}{" "}
+                unassigned scans.
+              </p>
+              <div className="section-title">
+                <h2>Your purchase references</h2>
+                <button
+                  className="text-button"
+                  onClick={() => a.navigate("orders")}
+                >
+                  View all orders
+                </button>
+              </div>
+              {a.ready && !a.data.orders.length ? (
+                <section className="empty">
+                  <Package aria-hidden="true" />
+                  <h2>No orders yet</h2>
+                  <p>
+                    A purchase reference tells us what you expected. An order
+                    number alone cannot retrieve an order.
+                  </p>
+                  <button className="secondary" onClick={openImport}>
+                    Add a purchase reference
+                  </button>
+                </section>
+              ) : (
+                a.data.orders.map((o) => (
+                  <article className="order-card" key={o.id}>
+                    <div>
+                      <h3>{o.label}</h3>
+                      <p>
+                        {o.items.length} product lines ·{" "}
+                        {o.items.reduce((n, i) => n + i.verified, 0)} matching
+                        units
+                      </p>
+                    </div>
+                    <button
+                      className="secondary"
+                      onClick={() => void a.start()}
+                    >
+                      Check delivery
+                    </button>
+                  </article>
+                ))
+              )}
             </>
           )}
-          {tab === "orders" && (
+          {a.tab === "orders" && (
             <>
               <div className="toolbar">
                 <h2>
-                  {orders.length} saved{" "}
-                  {orders.length === 1 ? "order" : "orders"}
+                  {a.ready
+                    ? `${a.data.orders.length} saved orders`
+                    : "Loading orders…"}
                 </h2>
-                <button
-                  className="primary"
-                  onClick={() => setImporting(!importing)}
-                >
-                  <Plus size={18} />
+                <button className="primary" onClick={openImport}>
                   Import an order
                 </button>
               </div>
               {importing && (
                 <section className="panel">
-                  <h2>Bring in an order</h2>
+                  <h2>
+                    {editing
+                      ? "Correct this reference"
+                      : "Bring in a purchase reference"}
+                  </h2>
                   <p>
-                    Paste confirmation text or upload an image or PDF.
-                    Extraction is a draft: confirm every product and quantity.
-                    Missing information stays blank.
+                    English receipts and explicit product lines are supported.
+                    Extraction is a draft. Missing details stay blank, and
+                    unknown quantities are not guessed.
                   </p>
                   <label>
                     Order name
                     <input
                       value={label}
-                      onChange={(e) => setLabel(e.target.value)}
                       maxLength={120}
+                      onChange={(e) => setLabel(e.target.value)}
                     />
                   </label>
+                  <label>
+                    Reference source
+                    <select
+                      value={source}
+                      onChange={(e) =>
+                        setSource(e.target.value as typeof source)
+                      }
+                    >
+                      <option value="purchase">
+                        Original purchase confirmation or receipt
+                      </option>
+                      <option value="manual">
+                        I am entering what I originally ordered
+                      </option>
+                      <option value="packing-slip">
+                        Packing slip / delivered contents only
+                      </option>
+                    </select>
+                  </label>
+                  {source === "packing-slip" && (
+                    <p>
+                      A packing slip cannot independently establish what was
+                      originally ordered. Order verification remains
+                      unable_to_verify.
+                    </p>
+                  )}
                   <label>
                     Confirmation text
                     <textarea
                       rows={6}
                       value={text}
+                      maxLength={100000}
                       onChange={(e) => setText(e.target.value)}
                       placeholder={
                         "Product | Brand | Variant | Size | Quantity\nOat drink | Everyday | Original | 1 L | 2"
@@ -558,12 +416,11 @@ export default function Home() {
                     />
                   </label>
                   <p className="hint">
-                    For reliable extraction, use one product per line. Optional
-                    fields: Product | Brand | Variant | Size | Quantity. Unknown
-                    quantities default to 1 for review.
+                    Enter Product | Brand | Variant | Size | Quantity, one
+                    product per line, or paste a receipt. Leave unknown fields
+                    blank. This does not retrieve purchases from retailers.
                   </p>
                   <label className="file-label">
-                    <Upload size={18} />
                     Upload image, PDF or text
                     <input
                       type="file"
@@ -572,22 +429,71 @@ export default function Home() {
                       onChange={(e) => void upload(e.target.files?.[0])}
                     />
                   </label>
-                  <button
-                    className="primary"
-                    disabled={busy || !text.trim()}
-                    onClick={() => {
-                      setDraft(extractOrder(text));
-                      say(
-                        "Review extracted products. Correct missing details and quantities before saving.",
-                      );
-                    }}
-                  >
-                    Extract products
-                    <ArrowRight size={17} />
-                  </button>
+                  {busy && (
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        importAbort.current?.abort();
+                        setBusy(false);
+                      }}
+                    >
+                      Cancel reading reference
+                    </button>
+                  )}
+                  <div className="button-row">
+                    <button
+                      className="secondary"
+                      disabled={busy || !text.trim()}
+                      onClick={() => {
+                        const items = extractOrder(text);
+                        setDraft(items);
+                        void a.announce(
+                          items.length
+                            ? "Draft products extracted. Review source lines and correct uncertain fields before saving."
+                            : "No products could be extracted. Paste an explicit product line or enter details below.",
+                        );
+                      }}
+                    >
+                      Extract products
+                    </button>
+                    <button
+                      className="text-button"
+                      onClick={() =>
+                        setDraft((d) => [
+                          ...d,
+                          {
+                            id: newId(),
+                            name: "",
+                            brand: "",
+                            variant: "",
+                            size: "",
+                            quantity: null,
+                            verified: 0,
+                          },
+                        ])
+                      }
+                    >
+                      Enter a product manually
+                    </button>
+                  </div>
                   {draft.map((i, index) => (
                     <fieldset key={i.id}>
                       <legend>Product {index + 1}</legend>
+                      {i.source && (
+                        <details>
+                          <summary>Source and uncertain fields</summary>
+                          <p>
+                            Page {i.source.page}, line {i.source.line}:{" "}
+                            {i.source.text}
+                          </p>
+                          <p>
+                            Review:{" "}
+                            {i.source.uncertain.join(", ") || "explicit fields"}
+                            . Unit price: {i.source.unitPrice ?? "unknown"};
+                            line total: {i.source.lineTotal ?? "unknown"}.
+                          </p>
+                        </details>
+                      )}
                       <div className="field-grid">
                         {(
                           [
@@ -601,12 +507,14 @@ export default function Home() {
                           <label key={key}>
                             {key === "name"
                               ? "Product name"
-                              : key.charAt(0).toUpperCase() + key.slice(1)}
+                              : key === "quantity"
+                                ? "Quantity (blank means unknown)"
+                                : key.charAt(0).toUpperCase() + key.slice(1)}
                             <input
                               type={key === "quantity" ? "number" : "text"}
                               min={key === "quantity" ? 1 : undefined}
                               max={key === "quantity" ? 999 : undefined}
-                              value={i[key]}
+                              value={i[key] ?? ""}
                               onChange={(e) =>
                                 setDraft((d) =>
                                   d.map((x) =>
@@ -615,7 +523,9 @@ export default function Home() {
                                           ...x,
                                           [key]:
                                             key === "quantity"
-                                              ? Number(e.target.value)
+                                              ? e.target.value === ""
+                                                ? null
+                                                : Number(e.target.value)
                                               : e.target.value,
                                         }
                                       : x,
@@ -638,27 +548,37 @@ export default function Home() {
                   ))}
                   {draft.length > 0 && (
                     <button className="primary" onClick={save}>
-                      <Check size={18} />
-                      Confirm and save order
+                      {editing
+                        ? "Save corrected reference and reset its checks"
+                        : "Confirm and save order"}
                     </button>
                   )}
                 </section>
               )}
-              {orders.map((o) => (
+              {a.data.orders.map((o) => (
                 <section className="panel" key={o.id}>
                   <div className="toolbar">
                     <h2>{o.label}</h2>
                     <button
                       className="text-button danger"
                       onClick={() => {
-                        setLastMatch(null);
-                        setOrders((p) => p.filter((x) => x.id !== o.id));
-                        say("Order removed.");
+                        stop();
+                        a.update({
+                          orders: a.data.orders.filter((x) => x.id !== o.id),
+                          attempts: a.data.attempts.filter(
+                            (event) => event.orderId !== o.id,
+                          ),
+                        });
+                        void a.announce("Order removed by your request.");
                       }}
                     >
-                      Remove order
+                      Remove order {o.label}
                     </button>
                   </div>
+                  <p>
+                    Reference:{" "}
+                    {o.source ?? "previously saved purchase reference"}
+                  </p>
                   {o.items.map((i) => (
                     <div className="order-line" key={i.id}>
                       <div>
@@ -666,313 +586,542 @@ export default function Home() {
                         <p>
                           {[i.brand, i.variant, i.size]
                             .filter(Boolean)
-                            .join(" · ") ||
-                            "Details missing — complete them before relying on OCR."}
+                            .join(" · ") || "Identifying details are missing"}
                         </p>
                       </div>
                       <span>
-                        {i.verified} / {i.quantity} verified
+                        {i.verified} / {i.quantity ?? "unknown"} matching
                       </span>
                     </div>
                   ))}
-                  <div className="toolbar">
-                    <span>
-                      {o.items.every((i) => i.verified === i.quantity)
-                        ? "Delivery complete"
-                        : "Awaiting verification"}
-                    </span>
+                  <p>
+                    {o.items.every(
+                      (i) => i.quantity !== null && i.verified === i.quantity,
+                    )
+                      ? "All expected units have matching evidence; contents were not checked."
+                      : "Unmatched, unchecked or unresolved units remain."}
+                  </p>
+                  <div className="button-row">
                     <button
                       className="secondary"
                       onClick={() => {
-                        setDraft(
-                          o.items.map((i) => ({
-                            ...i,
-                            id: crypto.randomUUID(),
-                            verified: 0,
-                          })),
-                        );
-                        setLabel(o.label + " (corrected)");
+                        setEditing(o.id);
+                        setDraft(o.items.map((i) => ({ ...i })));
+                        setLabel(o.label);
+                        setSource(o.source ?? "purchase");
                         setImporting(true);
-                        say(
-                          "Correction creates a new order with counts reset. Remove the old order after saving to avoid conflicts.",
+                        void a.announce(
+                          "Edit only the fields that need correction. Saving explicitly resets this order&apos;s checks.",
                         );
                       }}
                     >
-                      Correct details
+                      Correct details for {o.label}
                     </button>
-                    <button
-                      className="primary"
-                      onClick={() => navigate("scan")}
-                    >
+                    <button className="primary" onClick={() => void a.start()}>
                       Scan delivery
-                      <ScanLine size={18} />
                     </button>
                   </div>
                 </section>
               ))}
-              {!orders.length && !importing && (
-                <div className="empty">
-                  <Package />
+              {a.ready && !a.data.orders.length && !importing && (
+                <section className="empty">
                   <h2>No orders yet</h2>
-                  <p>Import your order confirmation to get started.</p>
-                </div>
+                  <p>Import or enter a purchase reference first.</p>
+                  <button className="secondary" onClick={openImport}>
+                    Add purchase reference
+                  </button>
+                </section>
               )}
             </>
           )}
-          {tab === "scan" && (
-            <div className="scan-layout">
+          {a.tab === "scan" && (
+            <>
+              <div className="scan-layout">
+                <section className="panel">
+                  <h2>Your camera assistant</h2>
+                  <p>
+                    Camera access is only for scanning. Put the phone on a
+                    stable support, rear camera toward one package about 20 cm
+                    away. Rotate the package slowly. Different products can
+                    continue automatically. Repeated identities need
+                    confirmation.
+                  </p>
+                  <div className="camera">
+                    <video
+                      ref={video}
+                      autoPlay
+                      muted
+                      playsInline
+                      aria-label="Live rear camera preview"
+                    />
+                    {!a.camera && (
+                      <div className="camera-placeholder">
+                        <ScanLine size={50} aria-hidden="true" />
+                        <span>Your camera is off</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="primary"
+                      disabled={a.phase === "requesting-permission"}
+                      onClick={() => (a.camera ? stop() : void a.start())}
+                    >
+                      {a.camera ? "Stop camera" : "Start camera"}
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={
+                        !a.camera || a.phase === "processing" || !!a.pending
+                      }
+                      onClick={() => void a.ocr()}
+                    >
+                      Read label with OCR
+                    </button>
+                  </div>
+                  <p>
+                    Automatic OCR reads stable snapshots, one at a time.{" "}
+                    {a.ocrTime !== null &&
+                      `Last OCR job: ${a.ocrTime} ms on this device.`}{" "}
+                    Unknown codes require a readable label. The catalog contains
+                    demonstration products only.
+                  </p>
+                </section>
+                <section className="panel">
+                  <span className="mini-label">YOUR CHECKING RESULT</span>
+                  <h2>
+                    {a.result
+                      ? userStatus(a.result.status)
+                      : "Ready for your first item"}
+                  </h2>
+                  <p>
+                    {a.result?.message ??
+                      "We compare observations with pending purchase references. Missing evidence never counts as a match."}
+                  </p>
+                  {a.result?.reason && <p>Reason: {a.result.reason}</p>}
+                  {a.result?.fields && a.result.fields.length > 0 && (
+                    <details>
+                      <summary>What was checked</summary>
+                      {a.result.fields.map((f) => (
+                        <p key={f.field}>
+                          {f.field}: {f.observed}. Source: {f.source}
+                        </p>
+                      ))}
+                    </details>
+                  )}
+                  {a.pending?.verdict.candidates?.map((c) => (
+                    <button
+                      className="secondary"
+                      key={`${c.orderId}:${c.itemId}`}
+                      onClick={() => a.selectLine(c)}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                  {a.pending?.another && (
+                    <section
+                      className="clarification"
+                      aria-label="Confirm physical unit"
+                    >
+                      <h3>Is this another physical unit?</h3>
+                      <p>
+                        A barcode cannot distinguish identical packages. Your
+                        answer records quantity confirmation separately from
+                        identity evidence.
+                      </p>
+                      <button className="primary" onClick={a.confirmAnother}>
+                        Yes, another unit
+                      </button>
+                      <button className="secondary" onClick={a.retry}>
+                        No, retry this unit
+                      </button>
+                    </section>
+                  )}
+                  <div className="button-row">
+                    <button
+                      className="secondary"
+                      disabled={!commandAllowed("next", a.phase)}
+                      onClick={a.nextItem}
+                    >
+                      Next item
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={!commandAllowed("retry", a.phase)}
+                      onClick={a.retry}
+                    >
+                      Retry
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={!a.data.attempts.some((event) => !event.undone)}
+                      onClick={a.undo}
+                    >
+                      Undo last checking event
+                    </button>
+                  </div>
+                  <hr />
+                  <h3>Use without a camera or voice</h3>
+                  <label>
+                    Enter a barcode
+                    <input
+                      value={barcode}
+                      onChange={(e) => setBarcode(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </label>
+                  <button
+                    className="secondary"
+                    disabled={!barcode.trim() || !canCheck}
+                    onClick={() =>
+                      a.check({ barcode: barcode.trim(), source: "manual" })
+                    }
+                  >
+                    Check barcode
+                  </button>
+                  <label>
+                    Read a label
+                    <textarea
+                      value={manualText}
+                      onChange={(e) => setManualText(e.target.value)}
+                      placeholder="Enter exactly the observed product name, brand, variant and size"
+                    />
+                  </label>
+                  <button
+                    className="secondary"
+                    disabled={!manualText.trim() || !canCheck}
+                    onClick={() =>
+                      a.check({
+                        text: manualText,
+                        confidence: 100,
+                        source: "manual",
+                      })
+                    }
+                  >
+                    Compare entered label
+                  </button>
+                  <p className="hint">
+                    Entered label text is user-observed evidence, not machine
+                    OCR. Example demo code: DEMO-OAT-ORIGINAL-1L.
+                  </p>
+                </section>
+              </div>
               <section className="panel">
                 <h2>
-                  <ScanLine size={22} /> Your camera assistant
+                  {a.phase === "finished"
+                    ? "Checking complete"
+                    : "Checking progress"}
                 </h2>
                 <p>
-                  Hold the label 15–25 cm away in even light. Slowly rotate the
-                  package. A successful match counts one item and pauses
-                  counting until you choose Next item.
+                  {a.stats.checked} of {a.stats.total} expected units checked.{" "}
+                  {a.stats.matched} matching · {a.stats.mismatch} mismatching ·{" "}
+                  {a.stats.unresolved} unable to verify · {a.stats.left} not yet
+                  checked. {a.stats.unknown} lines have unknown quantities.{" "}
+                  {a.stats.unassigned} scans are unassigned and do not reduce
+                  any order&apos;s quantity.
                 </p>
-                <div className="camera">
-                  <video
-                    ref={video}
-                    autoPlay
-                    muted
-                    playsInline
-                    aria-label="Live rear camera preview"
-                  />
-                  {!camera && (
-                    <div className="camera-placeholder">
-                      <ScanLine size={54} />
-                      <span>Your camera is off</span>
-                      <small>Start when you’re ready</small>
-                    </div>
-                  )}
-                </div>
-                <div className="button-row">
-                  <button
-                    className="primary"
-                    onClick={() => (camera ? stopCamera() : void startCamera())}
-                  >
-                    {camera ? "Stop camera" : "Start camera"}
-                    <ScanLine size={18} />
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={!camera || busy || !armed}
-                    onClick={() => void ocr()}
-                  >
-                    {busy ? "Reading label…" : "Read label with OCR"}
-                  </button>
-                </div>
-                <p className="hint">
-                  Unknown barcode? Try OCR. Recognition needs the product name,
-                  brand, variant and size. Demo catalog only; real retailer
-                  codes need catalog integration.
-                </p>
+                {a.data.attempts
+                  .filter((event) => !event.undone)
+                  .map((event) => (
+                    <p key={event.id}>
+                      {userStatus(event.status)}: {event.message}{" "}
+                      {event.confirmedAnotherUnit
+                        ? "Another physical unit confirmed by user."
+                        : ""}
+                    </p>
+                  ))}
               </section>
-              <section className="panel">
-                <span className="mini-label">YOUR SCAN RESULT</span>
-                <h2>{result?.status ?? "Ready for your first item"}</h2>
-                <p>
-                  {result?.message ??
-                    "We automatically compare each scan with all your pending orders."}
-                </p>
-                {!armed && (
-                  <button
-                    className="primary"
-                    onClick={() => {
-                      armedRef.current = true;
-                      setArmed(true);
-                      setResult(null);
-                      say(
-                        "Ready for the next item. Move the previous product away before scanning.",
-                      );
-                    }}
-                  >
-                    Next item
-                    <ArrowRight size={18} />
-                  </button>
-                )}
-                {lastMatch && (
-                  <button
-                    className="secondary"
-                    onClick={() => {
-                      const previous = lastMatch;
-                      if (previous) {
-                        setOrders(previous);
-                        ordersRef.current = previous;
-                        setLastMatch(null);
-                        setResult(null);
-                        armedRef.current = true;
-                        setArmed(true);
-                        say("Last verification undone. Ready to retry.");
-                      }
-                    }}
-                  >
-                    Undo last verification
-                  </button>
-                )}
-                <hr />
-                <label>
-                  Enter a barcode
-                  <input
-                    value={barcode}
-                    onChange={(e) => setBarcode(e.target.value)}
-                    autoComplete="off"
-                  />
-                </label>
-                <button
-                  className="secondary"
-                  disabled={!barcode.trim() || !armed}
-                  onClick={() => check({ barcode: barcode.trim() })}
-                >
-                  Check barcode
-                </button>
-                <p className="hint">
-                  Try DEMO-OAT-ORIGINAL-1L with a matching demo order.
-                  Demonstration codes are not real product barcodes.
-                </p>
-                <div className="progress-summary">
-                  <CheckCheck size={22} />
-                  <strong>
-                    {complete} of {total} items verified
-                  </strong>
-                </div>
-              </section>
-            </div>
+            </>
           )}
-          {tab === "help" && (
+          {a.tab === "settings" && (
             <section className="panel help">
-              <h2>Check a delivery in three steps</h2>
-              <ol>
-                <li>
-                  Import a confirmation. Review product name, brand, variant,
-                  size and quantity. Save your order.
-                </li>
-                <li>
-                  Start the camera and point it at a barcode. For unknown codes,
-                  turn to the full label and select Read label with OCR.
-                </li>
-                <li>
-                  Listen for the result. After a match, move the product aside
-                  and choose Next item. Use Undo for an accidental count.
-                </li>
-              </ol>
-              <h2>What the results mean</h2>
+              <h2>Choose your guidance</h2>
+              <fieldset>
+                <legend>Output preference</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="output"
+                    checked={!a.prefs.spoken}
+                    onChange={() =>
+                      a.setPrefs((p) => ({ ...p, spoken: false }))
+                    }
+                  />{" "}
+                  Screen-reader mode (default)
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="output"
+                    checked={a.prefs.spoken}
+                    onChange={() => a.setPrefs((p) => ({ ...p, spoken: true }))}
+                  />{" "}
+                  App spoken guidance
+                </label>
+              </fieldset>
               <p>
-                <strong>MATCH:</strong> evidence identifies one outstanding
-                order line. One unit is counted.
+                Screen-reader mode keeps semantic text and restrained live
+                updates with no automatic app speech. The app never detects or
+                controls your screen reader. App spoken guidance pauses
+                recognition while speaking. Stop speaking and Stop remain
+                available.
               </p>
+              <label htmlFor="text-size">Text size</label>
+              <select
+                id="text-size"
+                value={a.prefs.size}
+                onChange={(e) =>
+                  a.setPrefs((p) => ({
+                    ...p,
+                    size: e.target.value as Preferences["size"],
+                  }))
+                }
+              >
+                <option value="normal">Normal</option>
+                <option value="large">Large</option>
+                <option value="extra-large">Extra large</option>
+              </select>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={a.prefs.contrast}
+                  onChange={(e) =>
+                    a.setPrefs((p) => ({ ...p, contrast: e.target.checked }))
+                  }
+                />{" "}
+                High contrast
+              </label>
+              <label htmlFor="speech-rate">Speech rate</label>
+              <input
+                id="speech-rate"
+                type="range"
+                min="0.6"
+                max="1.4"
+                step="0.05"
+                value={a.prefs.rate}
+                onChange={(e) =>
+                  a.setPrefs((p) => ({ ...p, rate: Number(e.target.value) }))
+                }
+              />
+              <output htmlFor="speech-rate">
+                {a.prefs.rate.toFixed(2)} times normal
+              </output>
               <p>
-                <strong>MISMATCH:</strong> identified product is not
-                outstanding, or the ordered quantity is complete.
-              </p>
-              <p>
-                <strong>CONFLICT:</strong> more than one line could match, or
-                evidence disagrees. Correct duplicate orders and retry.
-              </p>
-              <p>
-                <strong>INCOMPLETE:</strong> evidence is missing or uncertain.
-                Improve lighting, rotate the package, or complete order details.
-              </p>
-              <h2>Accessibility and privacy</h2>
-              <p>
-                Every control supports a keyboard and screen reader. Results are
-                announced in a live region. Turn off built-in voice if your
-                screen reader speaks the results twice. Voice guidance uses your
-                device’s speech service, whose processing depends on your
-                operating system.
-              </p>
-              <p>
-                Images and order contents are processed in your browser. OCR
-                downloads its worker and English language model from third-party
-                CDNs on first use. No order data is sent to an AI service.
-                Session storage is optional and cleared by Clear orders; do not
-                use it on shared devices. Camera access requires HTTPS or
-                localhost.
-              </p>
-              <p>
-                This initial catalog contains illustrative products only. No
-                medical, allergen or safety conclusions are made. Real product
-                coverage requires a trusted retailer catalog.
+                Only these nonsensitive preferences are saved locally.
+                Receipts/photos are not stored with preferences. Speech output
+                depends on your browser and device service.
               </p>
             </section>
           )}
-          <footer>
-            <span>
-              <ShieldCheck size={15} />
-              Designed for independence. Built with care.
-            </span>
-            <button className="text-button" onClick={() => navigate("help")}>
-              Need a hand?
-              <ChevronRight size={16} />
-            </button>
-          </footer>
+          {a.tab === "help" && (
+            <section className="panel help">
+              <h2>Start with what you ordered</h2>
+              <ol>
+                <li>
+                  Paste or upload a purchase confirmation, or enter product
+                  details manually. Correct only uncertain fields. A packing
+                  slip describes delivered contents; it cannot independently
+                  establish what you ordered.
+                </li>
+                <li>
+                  Choose Start checking my delivery. Allow the camera only when
+                  ready. Use stable phone support while turning one package at a
+                  time. For an unknown barcode, turn to its full label and let
+                  automatic OCR try, or choose Read label with OCR.
+                </li>
+                <li>
+                  Read the result or opt into app spoken guidance. Different
+                  identifiable products advance automatically. For identical
+                  products, confirm another unit. Retry updates one attempt.
+                  Undo reverses its event.
+                </li>
+              </ol>
+              <h2>Commands and equivalent controls</h2>
+              <p>
+                Start, Stop, Repeat, Next, Help, Retry, Read my orders, Read the
+                result again, Go back, Stop speaking. Only final, exact command
+                phrases are accepted in a valid state. Choose Start listening
+                for one window of up to 15 seconds. It ends after a command,
+                silence or service failure. No background or locked-phone
+                operation is promised.
+              </p>
+              <p>
+                Recognition pauses during app speech, so voice interruption is
+                unavailable during that pause. Use Stop speaking, Stop, or
+                keyboard/assistive controls. Screen-reader speech may itself be
+                recognized: start a listening window only when ready.
+              </p>
+              <h2>Results and recovery</h2>
+              <p>
+                <strong>match:</strong> consistent identifying fields for one
+                reference line. Demo catalog identity or label fields were
+                checked; package contents, authenticity and safety were not
+                checked. <strong>mismatch:</strong> contrary identity or excess
+                quantity. <strong>unable_to_verify:</strong> missing fields, low
+                confidence, conflicting evidence, ambiguous order, unknown
+                quantity or dependent reference. Internal CONFLICT and
+                INCOMPLETE reasons remain available.
+              </p>
+              <p>
+                Rotate an unreadable label slowly and Retry, or enter observed
+                text/barcode. Next does not confirm a result or add a count.
+                Unknown quantities stay labelled. Checking complete may include
+                mismatches and unresolved units; it does not mean everything
+                matched. Unassigned scans never complete a random order.
+              </p>
+              <h2>Privacy and browser limits</h2>
+              <p>
+                Images and text are processed in this browser. English OCR
+                downloads worker/language assets from third-party CDNs; first
+                use may need a network connection. No retailer/email integration
+                or AI service is added. Voice recognition may send audio to a
+                browser-vendor service and may need a network connection. Enable
+                it only after reading the disclosure. Camera needs
+                HTTPS/localhost; microphone is requested only when you
+                explicitly start listening.
+              </p>
+              <p>
+                Orders stay in memory unless you opt into tab-session storage.
+                Clear orders removes those orders. Preferences are nonsensitive
+                local storage. Do not store orders on a shared device. File
+                limits: 10 MB, PDFs 20 pages, images/pages 12 megapixels, text
+                100,000 characters. English receipt layouts vary; extracted
+                fields remain drafts.
+              </p>
+              <p>
+                Real iPhone/VoiceOver, Android/TalkBack, Windows screen-reader,
+                camera, microphone and independent blind-user tests remain
+                required. Automated checks are not certification.
+              </p>
+            </section>
+          )}
+          <section className="panel" aria-label="Session controls">
+            <h2>Session controls</h2>
+            <p>
+              Session: {a.phase.replaceAll("-", " ")}. Camera:{" "}
+              {a.camera ? "on" : "off"}. Microphone:{" "}
+              {a.listening ? "listening" : "not listening"}. App speech:{" "}
+              {a.speaking ? "speaking" : "silent"}.
+            </p>
+            <div className="button-row">
+              <button
+                className="primary"
+                disabled={!a.ready}
+                onClick={() => void a.start()}
+              >
+                Start
+              </button>
+              <button
+                className="secondary"
+                aria-keyshortcuts="Escape"
+                onClick={stop}
+              >
+                Stop
+              </button>
+              <button className="secondary" onClick={() => a.command("repeat")}>
+                Repeat
+              </button>
+              <button
+                className="secondary"
+                onClick={() => a.command("stop speaking")}
+              >
+                Stop speaking
+              </button>
+              <button
+                className="secondary"
+                onClick={() => a.command("read my orders")}
+              >
+                Read my orders
+              </button>
+              <button
+                className="secondary"
+                onClick={() => a.command("read the result again")}
+              >
+                Read the result again
+              </button>
+              <button
+                className="secondary"
+                onClick={() => a.navigate("overview")}
+              >
+                Go back
+              </button>
+            </div>
+            <label>
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => {
+                  setConsent(e.target.checked);
+                  if (!e.target.checked) a.stopListening();
+                }}
+              />{" "}
+              I understand voice commands may send audio to my browser provider
+              and need a network connection.
+            </label>
+            <p>
+              Start listening requests microphone permission when needed and
+              opens a command window of up to 15 seconds. Listening pauses
+              during app speech. Buttons and keyboard remain available.
+            </p>
+            <div className="button-row">
+              <button
+                className="secondary"
+                disabled={!consent || a.listening}
+                onClick={a.startListening}
+              >
+                Start listening
+              </button>
+              <button className="secondary" onClick={a.stopListening}>
+                Stop listening
+              </button>
+            </div>
+          </section>
           <section className="session-controls" aria-label="Privacy controls">
             <label>
               <input
                 type="checkbox"
-                checked={remember}
-                onChange={(e) => setRemember(e.target.checked)}
-              />
+                checked={a.remember}
+                onChange={(e) =>
+                  e.target.checked ? a.setRemember(true) : a.storageOff()
+                }
+              />{" "}
               Keep orders in this browser tab for this session
             </label>
             <button
               className="text-button danger"
               onClick={() => {
-                stopCamera();
-                setOrders([]);
-                ordersRef.current = [];
-                setDraft([]);
+                importAbort.current?.abort();
+                setBusy(false);
+                a.clear();
                 setText("");
-                setResult(null);
-                setLastMatch(null);
-                setRemember(false);
-                sessionStorage.removeItem("ordercheck.v1");
-                armedRef.current = true;
-                setArmed(true);
-                say("All orders and verification history cleared.");
+                setDraft([]);
+                setImporting(false);
               }}
             >
-              <X size={14} />
               Clear orders
             </button>
           </section>
+          <footer>
+            <span>
+              <ShieldCheck size={18} aria-hidden="true" /> Your pace. Your
+              choice.
+            </span>
+            <button className="text-button" onClick={() => a.command("help")}>
+              Help
+            </button>
+          </footer>
         </main>
         <div className="audio-status">
-          <span>
-            <AudioLines size={18} />
-            <span role="status" aria-live="polite" aria-atomic="true">
-              {message}
-            </span>
-          </span>
-          <button
-            aria-label="Repeat spoken guidance"
-            onClick={() => say(message)}
+          <AudioLines aria-hidden="true" />
+          <span
+            role="status"
+            aria-live={a.prefs.spoken ? "off" : "polite"}
+            aria-atomic="true"
           >
-            <Volume2 size={19} />
-          </button>
+            <span key={a.noticeId}>{a.message}</span>
+          </span>
         </div>
       </div>
-    </>
-  );
-}
-function OrderCard({ order, onScan }: { order: Order; onScan: () => void }) {
-  const done = order.items.reduce((n, i) => n + i.verified, 0);
-  const total = order.items.reduce((n, i) => n + i.quantity, 0);
-  return (
-    <article className="order-card">
-      <span className="stat-icon">
-        <Package />
-      </span>
-      <div>
-        <h3>{order.label}</h3>
-        <p>
-          {done} of {total} items verified
-        </p>
-      </div>
-      <button className="secondary" onClick={onScan}>
-        Check delivery
-        <ArrowRight size={16} />
-      </button>
-    </article>
+    </div>
   );
 }
