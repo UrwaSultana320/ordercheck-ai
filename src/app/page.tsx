@@ -18,12 +18,13 @@ import {
   type Order,
 } from "@/lib/engine";
 import { readImport } from "@/lib/media";
+import { VoiceOrder } from "@/components/voice-order";
 import { newId } from "@/lib/id";
 import { useAssistant, type Tab, type Preferences } from "@/lib/use-assistant";
 import { commandAllowed } from "@/lib/session";
 const titles: Record<Tab, string> = {
   overview: "Let's check your delivery",
-  orders: "Your purchase references",
+  orders: "My Orders",
   scan: "Check your delivery",
   help: "Help & guidance",
   settings: "Accessibility settings",
@@ -32,6 +33,7 @@ export default function Home() {
   const video = useRef<HTMLVideoElement>(null),
     heading = useRef<HTMLHeadingElement>(null);
   const a = useAssistant(video, heading);
+  const [composing, setComposing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [importing, setImporting] = useState(false),
     [editing, setEditing] = useState<string | null>(null);
@@ -46,7 +48,7 @@ export default function Home() {
   const importAbort = useRef<AbortController | null>(null);
   useEffect(() => {
     if (a.phase === "awaiting-reference")
-      queueMicrotask(() => setImporting(true));
+      queueMicrotask(() => { setImporting(false); setComposing(true); });
     if (a.phase === "paused") {
       importAbort.current?.abort();
       queueMicrotask(() => setBusy(false));
@@ -63,15 +65,25 @@ export default function Home() {
       window.removeEventListener("blur", pause);
     };
   }, []);
+  function openVoiceOrder() {
+    a.stop();
+    a.navigate("orders");
+    setImporting(false);
+    setComposing(true);
+    a.phaseTo("idle");
+    void a.announce("Create your order above. Review and confirm before saving.");
+  }
   function openImport() {
+    setComposing(false);
     a.navigate("orders");
     setImporting(true);
     setEditing(null);
     setDraft([]);
     setText("");
-    a.phaseTo("awaiting-reference");
+    a.phaseTo("idle");
   }
   function stop() {
+    setComposing(false);
     importAbort.current?.abort();
     setBusy(false);
     a.stop();
@@ -113,6 +125,7 @@ export default function Home() {
       id: editing ?? newId(),
       label,
       source,
+      platform: editing ? a.data.orders.find(o => o.id === editing)?.platform : undefined,
       items: draft.map((i) => ({ ...i, verified: 0 })),
     });
     if (!parsed.success) {
@@ -243,19 +256,17 @@ export default function Home() {
                     <button
                       className="primary"
                       disabled={!a.ready}
-                      onClick={() => void a.start()}
+                      onClick={openVoiceOrder}
                     >
+                      Tell OrderCheck what I ordered
+                    </button>
+                    <button className="secondary" onClick={() => void a.start()}>
                       Start checking my delivery
                     </button>
-                    <button className="secondary" onClick={openImport}>
-                      Add order or receipt
-                    </button>
                   </div>
-                  <h2>We’ll guide you, one item at a time.</h2>
+                  <h2>Create an order with your voice.</h2>
                   <p>
-                    Start with your purchase confirmation or enter product
-                    details. Then let the camera read each package, with
-                    readable controls at every step.
+                    Describe your order naturally. Include the product name, quantity, size and variant when you know them. Review and confirm before saving.
                   </p>
                   <p className="hero-foot">
                     Screen-reader mode is the default. App spoken guidance is
@@ -303,7 +314,7 @@ export default function Home() {
                 unassigned scans.
               </p>
               <div className="section-title">
-                <h2>Your purchase references</h2>
+                <h2>My Orders</h2>
                 <button
                   className="text-button"
                   onClick={() => a.navigate("orders")}
@@ -319,8 +330,8 @@ export default function Home() {
                     A purchase reference tells us what you expected. An order
                     number alone cannot retrieve an order.
                   </p>
-                  <button className="secondary" onClick={openImport}>
-                    Add a purchase reference
+                  <button className="primary" onClick={openVoiceOrder}>
+                    Tell OrderCheck what I ordered
                   </button>
                 </section>
               ) : (
@@ -353,10 +364,15 @@ export default function Home() {
                     ? `${a.data.orders.length} saved orders`
                     : "Loading orders…"}
                 </h2>
-                <button className="primary" onClick={openImport}>
-                  Import an order
-                </button>
+                <button className="primary" disabled={!a.ready} onClick={openVoiceOrder}>Tell OrderCheck what I ordered</button>
               </div>
+              {composing && <VoiceOrder
+                save={(order, spoken) => { a.update({ ...a.data, orders: [...a.data.orders, order] }); setComposing(false); a.navigate("orders"); void a.announce("Order saved in My Orders.", 3, spoken); }}
+                close={() => { setComposing(false); void a.announce("Order cancelled. Nothing saved."); }}
+                announce={a.speakOrder}
+                stopSpeech={() => a.command("stop speaking")}
+              />}
+              <details><summary>Other ways to add an order</summary><p>Import a purchase receipt or enter product lines manually.</p><button className="secondary" onClick={openImport}>Import an order</button></details>
               {importing && (
                 <section className="panel">
                   <h2>
@@ -388,6 +404,8 @@ export default function Home() {
                       <option value="purchase">
                         Original purchase confirmation or receipt
                       </option>
+                      <option value="voice">Voice-created order</option>
+                      <option value="receipt">Receipt</option>
                       <option value="manual">
                         I am entering what I originally ordered
                       </option>
@@ -575,6 +593,7 @@ export default function Home() {
                       Remove order {o.label}
                     </button>
                   </div>
+                  {o.platform && <p>Platform: {o.platform}</p>}
                   <p>
                     Reference:{" "}
                     {o.source ?? "previously saved purchase reference"}
@@ -582,15 +601,14 @@ export default function Home() {
                   {o.items.map((i) => (
                     <div className="order-line" key={i.id}>
                       <div>
-                        <strong>{i.name}</strong>
+                        <h3>{i.name}</h3>
                         <p>
-                          {[i.brand, i.variant, i.size]
-                            .filter(Boolean)
-                            .join(" · ") || "Identifying details are missing"}
+                          {[i.brand && `Brand: ${i.brand}`, i.variant && `Variant: ${i.variant}`, i.size && `Size: ${i.size}`, ...Object.entries(i.attributes ?? {}).filter(([,v]) => v).map(([k,v]) => `${k}: ${v}`)].filter(Boolean).join(" · ")}
                         </p>
                       </div>
                       <span>
-                        {i.verified} / {i.quantity ?? "unknown"} matching
+                        {i.quantity !== null && <span>Quantity: {i.quantity}. </span>}
+                        <span>{i.verified} / {i.quantity ?? "unknown"} matching</span>
                       </span>
                     </div>
                   ))}
@@ -623,12 +641,12 @@ export default function Home() {
                   </div>
                 </section>
               ))}
-              {a.ready && !a.data.orders.length && !importing && (
+              {a.ready && !a.data.orders.length && !importing && !composing && (
                 <section className="empty">
                   <h2>No orders yet</h2>
                   <p>Import or enter a purchase reference first.</p>
-                  <button className="secondary" onClick={openImport}>
-                    Add purchase reference
+                  <button className="secondary" onClick={openVoiceOrder}>
+                    Tell OrderCheck what I ordered
                   </button>
                 </section>
               )}
@@ -1018,7 +1036,7 @@ export default function Home() {
               >
                 Stop
               </button>
-              <button className="secondary" onClick={() => a.command("repeat")}>
+              <button className="secondary" disabled={composing} onClick={() => a.command("repeat")}>
                 Repeat
               </button>
               <button
@@ -1029,12 +1047,14 @@ export default function Home() {
               </button>
               <button
                 className="secondary"
+                disabled={composing}
                 onClick={() => a.command("read my orders")}
               >
                 Read my orders
               </button>
               <button
                 className="secondary"
+                disabled={composing}
                 onClick={() => a.command("read the result again")}
               >
                 Read the result again
@@ -1066,7 +1086,7 @@ export default function Home() {
             <div className="button-row">
               <button
                 className="secondary"
-                disabled={!consent || a.listening}
+                disabled={!consent || a.listening || composing}
                 onClick={a.startListening}
               >
                 Start listening
@@ -1092,6 +1112,7 @@ export default function Home() {
               onClick={() => {
                 importAbort.current?.abort();
                 setBusy(false);
+                setComposing(false);
                 a.clear();
                 setText("");
                 setDraft([]);

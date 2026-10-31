@@ -21,9 +21,19 @@ npx.cmd playwright install chromium
 npm.cmd run test:e2e
 ```
 
-## First delivery
+## Create an order with your voice
 
-Import this explicit demonstration line, review the fields, and save:
+Choose **Tell OrderCheck what I ordered**. Allow browser-provider speech recognition, then choose **Start order recording**. Speak naturally and pause when finished, or say **Stop recording**. Listening ends after 4.5 seconds without a new recognition result, a browser end event, or a 60-second maximum. Cancel and Start again remain available. Unsupported browsers or denied permissions retain the labelled typed-transcript fallback. No audio is retained by this application; browser-vendor recognition can use a network service.
+
+OrderCheck reads back a draft after dictation, then opens a bounded 15-second confirmation window. Say **Confirm**, **Change**, **Change size for product 2** (or another named field), **Start again**, or **Cancel**. Change asks a short question about one field; the answer updates that field and triggers another readback. Equivalent buttons and a field selector support keyboard/screen-reader use. Typed review respects the existing spoken-guidance preference; explicit recording/readback opts into speech for this workflow. Backgrounding, Escape, Stop, cancellation and navigation release recognition; there is no background listening loop.
+
+Extraction is deterministic, conservative English support, separate from the receipt parser. Stated quantities, numeric sizes, explicit attribute labels, and clear clothing-colour/food-flavour phrases are supported. Unlabelled brand/variant descriptions stay intact in the product name; no catalog completion is attempted. Complex grammar, spoken number phrases and ambiguous product boundaries need review or targeted editing. Missing quantities and uncertain values block saving; optional missing fields remain omitted. Corrections that are still uncertain do not clear the confirmation gate. Only explicit confirmation creates a canonical order in My Orders. Raw transcripts stay in unsaved component memory and are excluded from saved orders. Typed transcripts use the manual source; dictated orders use voice.
+
+The canonical Order/Item schemas now include optional platform and extensible attributes, while loading existing saved orders unchanged. New attributes are retained and displayed; this phase does not extend the existing name/brand/variant/size verification rules. Incomplete identification remains unable to verify. No API key, external AI integration, new dependency or mobile framework is added. A future approved transcription provider can implement TranscriptionProvider; stronger natural-language extraction would also need a separately approved integration or parser expansion.
+
+## Secondary receipt/manual import and verification demonstration
+
+Open My orders → Other ways to add an order → Import an order. Import this explicit demonstration line, review the fields, and save:
 
 ```text
 Oat drink | Everyday | Original | 1 L | 2
@@ -37,6 +47,10 @@ Select whether the reference is an original purchase, your manual account of the
 
 ## Matching and architecture
 
+- `src/lib/spoken-order.ts`: platform-independent candidate extraction, uncertainty, field correction, readback and confirmation gate.
+- `src/lib/order-transcription.ts`: replaceable transcription-provider interface and bounded browser recognition/lifecycle adapter.
+- `src/lib/order-storage.ts`: browser preference/session storage boundary, replaceable for native storage.
+- `src/components/voice-order.tsx`: accessible recording, transcript review and targeted corrections.
 - `src/lib/engine.ts`: deterministic comparison, provenance schemas, draft extraction, idempotent quantity-event ledger, Retry/Undo and counters.
 - `src/data/catalog.v1.json`: versioned illustrative catalog. Replace with authoritative retailer identifiers before real deliveries.
 - `src/lib/media.ts`: bounded reusable OCR worker and cancellable image/PDF/text extraction. PDF worker is copied locally at installation.
@@ -59,7 +73,7 @@ Metrics use expected physical units with known quantities. `Items checked` inclu
 
 ## Privacy and accessibility
 
-Order data and observations stay in memory by default. Optional validated `sessionStorage` (`ordercheck.v2`) keeps orders/checking events for the current tab session; existing v1 order sessions load compatibly. Clear orders explicitly removes both versions. Invalid stored data is preserved with a warning, not silently deleted. Storage failures leave the current visit functional. Only nonsensitive accessibility preferences use `localStorage`. Images are transient; OCR worker/language assets come from Tesseract's public CDNs. System fonts replace external font downloads. No analytics or server-side order storage is added. Browser/OS speech services may process speech/audio remotely; voice recognition is not promised offline or on-device. Consent is separate and the microphone is requested only by Start listening. Client processing is not encryption; use a trusted device.
+Order data and observations stay in memory by default. Optional validated `sessionStorage` (`ordercheck.v2`) keeps orders/checking events for the current tab session; existing v1 order sessions load compatibly. Clear orders explicitly removes both versions. Invalid stored data is preserved with a warning, not silently deleted. Storage failures leave the current visit functional. Only nonsensitive accessibility preferences use `localStorage`. Images are transient; OCR worker/language assets come from Tesseract's public CDNs. System fonts replace external font downloads. No analytics or server-side order storage is added. Browser/OS speech services may process speech/audio remotely; voice recognition is not promised offline or on-device. Consent is separate and the microphone is requested only by an explicit listening/recording action (including the confirmation/correction windows within that requested voice flow). Client processing is not encryption; use a trusted device.
 
 Screen-reader mode is the default: semantic content plus restrained polite updates, without automatic app TTS. App spoken guidance is opt-in, with Repeat, Stop speaking and speech rate controls. No screen-reader detection is attempted. Start listening opens one explicit window up to 15 seconds, ending after a final command, silence or service failure; no endless restart loop. Commands: Start, Stop, Repeat, Next, Help, Retry, Read my orders, Read the result again, Go back, Stop speaking. Identical-unit clarification also accepts Yes another unit / No retry this unit. Arbitrary imported text is not executable. Recognition is paused during app speech and resumes only within a still-requested active listening window. Voice interruption during that pause is unavailable: use the Stop speaking/Stop controls or Escape to stop the session. Stop cancels scanning/listening/pending work and preserves confirmed results. Backgrounding/page loss releases camera, recognition and OCR resources; there is no locked-phone/background operation.
 
@@ -85,6 +99,8 @@ Authoritative retailer catalogs, email forwarding, retailer APIs, retailer-speci
 - [ ] Complete physical-device and independent user validation (NOT RUN; checklist below).
 
 Baseline on 2026-10-30: existing lint, typecheck, 14 unit tests, production build and 4 Playwright tests passed. Updated local checks passed on 2026-10-30: lint (no warnings), typecheck, 40 unit tests, production build and 18 Playwright tests. Desktop/mobile screenshots were visually inspected. PR #13 records hosted CI separately. Speech/OCR service fixtures and late-camera-permission tests use mocks; desktop/mobile Chromium emulation does not validate physical iOS/Android. Reflow is tested at 320 CSS pixels (equivalent layout width to 1280 at 400% zoom), text-spacing overrides, large text preferences, and 200% root text sizing. Actual browser/OS zoom, OS magnification and physical touch targets still need manual verification.
+
+Voice-created order workflow validation on 2026-10-31: baseline 40 unit tests and 18 browser tests passed. Final lint (no warnings), typecheck, npm test (68 tests), production build, npm run test (68 tests), and test:e2e (32 desktop/mobile Chromium tests, including axe) passed. New review screenshots were inspected at desktop/mobile emulation sizes. The initial sandbox-only Vitest spawn EPERM was resolved by running with worker-process permission; no application baseline test failure remained. Speech recognition, permission denial and readback fixtures are mocked. Scanning, OCR, barcodes and verification rules were preserved; receipt/manual import moved to a secondary area, with no old infrastructure removed. Guided-camera positioning and delivery-verification redesign were not started.
 
 Manual-device status: **NOT RUN** for real iPhone/VoiceOver, Android/TalkBack, Windows screen reader, microphone recognition/TTS overlap, actual camera/OCR/barcodes, physical duplicate units/rapid swaps, independent blind-user setup and recovery. No blind-user validation or WCAG certification is claimed.
 

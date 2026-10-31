@@ -43,8 +43,8 @@ export class VoiceController {
       error: (message: string) => void;
     },
   ) {}
-  say(text: string, priority = 1): Promise<void> {
-    if (!this.enabled || !this.host.active()) return Promise.resolve();
+  say(text: string, priority = 1, explicit = false): Promise<void> {
+    if ((!this.enabled && !explicit) || !this.host.active()) return Promise.resolve();
     if (!this.host.synthesis) {
       this.events.error(
         "Spoken guidance is unavailable in this browser. Guidance remains displayed as text.",

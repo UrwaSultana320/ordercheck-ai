@@ -18,6 +18,7 @@ export const itemSchema = z
     size: z.string().trim().max(60),
     quantity: z.number().int().min(1).max(999).nullable(),
     verified: z.number().int().min(0).max(999),
+    attributes: z.record(z.string().max(60), z.string().trim().max(160)).optional(),
     productId: z.string().optional(),
     source: provenanceSchema.optional(),
   })
@@ -28,7 +29,8 @@ export const itemSchema = z
 export const orderSchema = z.object({
   id: z.string().min(1),
   label: z.string().trim().min(1).max(120),
-  source: z.enum(["purchase", "manual", "packing-slip"]).optional(),
+  source: z.enum(["purchase", "manual", "packing-slip", "voice", "receipt"]).optional(),
+  platform: z.string().trim().max(120).optional(),
   items: z.array(itemSchema).min(1).max(200),
 });
 export const sessionSchema = z.array(orderSchema).max(100);

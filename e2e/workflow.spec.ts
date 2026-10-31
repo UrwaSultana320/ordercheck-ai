@@ -21,6 +21,8 @@ async function addOrder(
   label = "My delivery",
 ) {
   await navigate(page, "My orders");
+  if (await page.getByText("Other ways to add an order", { exact: true }).locator("..").getAttribute("open") === null)
+    await page.getByText("Other ways to add an order", { exact: true }).click();
   await page
     .getByRole("button", { name: "Import an order", exact: true })
     .click();
@@ -159,9 +161,9 @@ test("packing-slip provenance and unknown quantity never become a verified deliv
   page,
 }) => {
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Add order or receipt", exact: true })
-    .click();
+  await navigate(page, "My orders");
+  await page.getByText("Other ways to add an order", { exact: true }).click();
+  await page.getByRole("button", { name: "Import an order", exact: true }).click();
   await page.getByLabel("Reference source").selectOption("packing-slip");
   await page
     .getByLabel("Confirmation text")

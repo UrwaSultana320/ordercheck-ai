@@ -13,6 +13,7 @@ import {
   type Attempt,
 } from "./engine";
 import { OcrReader } from "./media";
+import { orderStorage } from "./order-storage";
 import { newId } from "./id";
 import { VoiceController, browserVoiceHost } from "./voice";
 import {
@@ -92,12 +93,12 @@ export function useAssistant(
     dataRef.current = next;
     setData(next);
   }
-  function announce(s: string, priority = 1) {
+  function announce(s: string, priority = 1, explicit = false) {
     if (priority === 0 && messageRef.current === s) return Promise.resolve();
     messageRef.current = s;
     setMessage(s);
     setNoticeId((n) => n + 1);
-    return voice.current?.say(s, priority) ?? Promise.resolve();
+    return voice.current?.say(s, priority, explicit) ?? Promise.resolve();
   }
   function pendingTo(next: Pending | null) {
     pendingRef.current = next;
@@ -164,7 +165,7 @@ export function useAssistant(
     queueMicrotask(() => {
       if (!mounted.current) return;
       try {
-        const raw = localStorage.getItem("ordercheck.preferences.v1");
+        const raw = orderStorage.getPreference();
         if (raw) {
           const p = JSON.parse(raw);
           setPrefs({
@@ -185,8 +186,8 @@ export function useAssistant(
         );
       }
       try {
-        const saved = sessionStorage.getItem("ordercheck.v2"),
-          legacy = sessionStorage.getItem("ordercheck.v1");
+        const saved = orderStorage.getSession(),
+          legacy = orderStorage.getLegacySession();
         if (saved || legacy) {
           const parsed = saved
             ? savedStateSchema.parse(JSON.parse(saved))
@@ -242,10 +243,7 @@ export function useAssistant(
     }
     if (ready)
       try {
-        localStorage.setItem(
-          "ordercheck.preferences.v1",
-          JSON.stringify(prefs),
-        );
+        orderStorage.setPreference(JSON.stringify(prefs));
       } catch {
         queueMicrotask(() =>
           setStorageError(
@@ -257,7 +255,7 @@ export function useAssistant(
   useEffect(() => {
     if (ready && remember)
       try {
-        sessionStorage.setItem("ordercheck.v2", JSON.stringify(data));
+        orderStorage.setSession(JSON.stringify(data));
       } catch {
         queueMicrotask(() =>
           setStorageError(
@@ -269,8 +267,7 @@ export function useAssistant(
   function storageOff() {
     setRemember(false);
     try {
-      sessionStorage.removeItem("ordercheck.v1");
-      sessionStorage.removeItem("ordercheck.v2");
+      orderStorage.clearSession();
     } catch {
       setStorageError(
         "Storage could not be cleared. Use browser site-data controls.",
@@ -283,7 +280,7 @@ export function useAssistant(
       navigate("orders");
       phaseTo("awaiting-reference");
       void announce(
-        "Welcome. No purchase reference yet. Paste a confirmation, enter product details, or upload a receipt. An order number alone cannot retrieve purchases.",
+        "Welcome. No purchase reference yet. Tell OrderCheck what you ordered, then review and confirm. Receipt import remains available under Other ways to add an order.",
       );
       return;
     }
@@ -737,6 +734,7 @@ export function useAssistant(
     ocrTime,
     stats: progress(data),
     announce,
+    speakOrder: (text: string, explicit = false) => voice.current?.say(text, 3, explicit) ?? Promise.resolve(),
     start,
     stop,
     check,
