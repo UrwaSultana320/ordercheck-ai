@@ -5,7 +5,7 @@ const config: NextConfig = {
       {
         source: "/:path*",
         headers: [
-          { key: "Permissions-Policy", value: "camera=(self), microphone=()" },
+          { key: "Permissions-Policy", value: "camera=(self), microphone=(self)" },
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "X-Content-Type-Options", value: "nosniff" },
         ],
