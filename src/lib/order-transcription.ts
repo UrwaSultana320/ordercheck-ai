@@ -1,4 +1,5 @@
 import { browserVoiceHost, type Recognition, type VoiceHost } from "./voice";
+import { browserOrderRecordingHost, RecordedOrderTranscription } from "./order-recording";
 
 export const orderDictationLocales = [
   { value: "en-PK", label: "English (Pakistan)" },
@@ -8,7 +9,7 @@ export type OrderDictationLocale = typeof orderDictationLocales[number]["value"]
 export const defaultOrderDictationLocale: OrderDictationLocale = "en-PK";
 
 export interface TranscriptionProvider {
-  start(events: { started(): void; complete(text: string): void; error(message: string): void }, limitMs?: number): void;
+  start(events: { started(): void; transcribing?(): void; complete(text: string): void; error(message: string): void }, limitMs?: number): void;
   stop(): void;
   cancel(): void;
 }
@@ -82,7 +83,11 @@ export class BrowserTranscription implements TranscriptionProvider {
     if (rec) { rec.onstart = rec.onresult = rec.onend = rec.onerror = null; try { rec.abort(); } catch { /* already ended */ } }
   }
 }
-export function createOrderTranscription(locale: OrderDictationLocale = defaultOrderDictationLocale): TranscriptionProvider {
+export function createOrderTranscription(): TranscriptionProvider {
+  return new RecordedOrderTranscription(browserOrderRecordingHost());
+}
+/** Only explicit short responses/corrections use browser recognition. */
+export function createOrderResponseRecognition(locale: OrderDictationLocale = defaultOrderDictationLocale): TranscriptionProvider {
   return new BrowserTranscription(browserVoiceHost(), locale);
 }
 /** Lifecycle/device events are isolated here for replacement by a mobile adapter. */
