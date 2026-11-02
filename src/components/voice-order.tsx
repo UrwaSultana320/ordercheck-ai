@@ -2,11 +2,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { Order } from "@/lib/engine";
 import { confirmOrder, correctOrder, extractSpokenOrder, fieldValue, orderFields, orderReadback, type Correction, type OrderCandidate } from "@/lib/spoken-order";
-import { createOrderTranscription, onOrderInterruption, type TranscriptionProvider } from "@/lib/order-transcription";
+import { createOrderTranscription, defaultOrderDictationLocale, orderDictationLocales, onOrderInterruption, type OrderDictationLocale, type TranscriptionProvider } from "@/lib/order-transcription";
 
 type Props = { save(order: Order, spoken: boolean): void; close(): void; announce(text: string, spoken?: boolean): Promise<void>; stopSpeech(): void };
 export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState("");
+  const [locale, setLocale] = useState<OrderDictationLocale>(defaultOrderDictationLocale);
+  const errorMessage = useRef<HTMLParagraphElement>(null);
   const [candidate, setCandidate] = useState<OrderCandidate | null>(null);
   const [status, setStatus] = useState("Ready. Type your order or allow the microphone and begin.");
   const [listening, setListening] = useState(false);
@@ -21,7 +24,6 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const latest = useRef({ announce, stopSpeech });
   useEffect(() => { latest.current = { announce, stopSpeech }; });
   useEffect(() => {
-    provider.current = createOrderTranscription();
     const generation = epoch;
     const off = onOrderInterruption(() => {
       epoch.current++;
@@ -35,8 +37,12 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   }, []);
   useEffect(() => { const frame = requestAnimationFrame(() => heading.current?.focus()); return () => cancelAnimationFrame(frame); }, [candidate, editing]);
   function cancelListening() { epoch.current++; provider.current?.cancel(); stopSpeech(); setListening(false); }
+  function showError(message: string) {
+    setError(message);
+    requestAnimationFrame(() => errorMessage.current?.focus());
+  }
   function reset() {
-    cancelListening(); dictated.current = false; setTranscript(""); setCandidate(null); setEditing(false); setAnswer("");
+    cancelListening(); dictated.current = false; setTranscript(""); setError(""); setCandidate(null); setEditing(false); setAnswer("");
     setStatus("Start again. Nothing saved. Describe your order when ready.");
   }
   function targetFrom(key: string): Correction {
@@ -50,18 +56,20 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   }
   function listen(mode: "order" | "command" | "correction", draft = candidate, target?: Correction) {
     cancelListening();
+    setError("");
+    provider.current = createOrderTranscription(locale);
     spoken.current = true;
     setStatus("Requesting microphone permission. Cancel remains available.");
     provider.current?.start({
       started: () => { setListening(true); setStatus(mode === "command" ? "Listening for Confirm, Change, Start again, or Cancel. Up to 15 seconds." : "Listening. Pause when finished, or say Stop recording. Up to 60 seconds."); },
-      error: message => { setListening(false); setStatus(message); },
+      error: message => { setListening(false); if (mode === "order") showError(message); else setStatus(message); },
       complete: text => {
         setListening(false);
         setStatus("Listening ended. Nothing saved yet.");
         const command = text.toLowerCase().trim().replace(/[.!?]+$/, "");
         if (command === "cancel") { cancelListening(); close(); return; }
         if (command === "start again") { reset(); if (consent) listen("order", null); return; }
-        if (!text.trim()) { setStatus("Nothing heard. Try again or type your order."); return; }
+        if (!text.trim()) { if (mode === "order") showError("Nothing heard. Try again or type your order."); else setStatus("Nothing heard. Try again or type your order."); return; }
         if (mode === "order") { dictated.current = true; setTranscript(text); process(text); }
         else if (mode === "correction" && draft && target) {
           try { const updated = correctOrder(draft, target, text); setCandidate(updated); setEditing(false); void review(updated); }
@@ -88,8 +96,9 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   }
   function process(value = transcript) {
     cancelListening();
+    setError("");
     try { void review(extractSpokenOrder(value)); }
-    catch (e) { setStatus(e instanceof Error ? e.message : "Could not interpret the order. Please try again."); }
+    catch (e) { showError(e instanceof Error ? e.message : "Could not interpret the order. Please try again."); }
   }
   async function change(draft: OrderCandidate, target: Correction, voice = false) {
     cancelListening(); setEditing(true); setTargetKey(keyFrom(target));
@@ -111,8 +120,11 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     <p><strong>Order microphone: {listening ? "listening" : "off"}.</strong> Audio is not saved by OrderCheck. Your browser provider may process audio online. English speech support varies.</p>
     <label><input type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (!e.target.checked) cancelListening(); }} /> Allow order speech recognition through my browser provider</label>
     {!candidate && <>
+      <label htmlFor="order-speech-language">Order speech language</label><select id="order-speech-language" value={locale} disabled={listening} onChange={e => setLocale(e.target.value as OrderDictationLocale)}>{orderDictationLocales.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+      <p>Language support and accuracy depend on your browser provider. If Pakistani English is unavailable, try English (US). Check and edit misheard names before reviewing.</p>
       <div className="button-row"><button className="primary" disabled={!consent || listening} onClick={() => listen("order")}>Start order recording</button><button className="secondary" disabled={!listening} onClick={() => provider.current?.stop()}>Finish recording</button></div>
-      <label>Order transcript<textarea maxLength={20000} rows={5} value={transcript} disabled={listening} onChange={e => { dictated.current = false; setTranscript(e.target.value); }} /></label>
+      <label htmlFor="order-transcript">Order transcript</label><textarea id="order-transcript" maxLength={20000} rows={5} value={transcript} disabled={listening} aria-invalid={!!error} aria-describedby={error ? "order-transcript-error" : undefined} onChange={e => { dictated.current = false; setTranscript(e.target.value); setError(""); }} />
+      {error && <p id="order-transcript-error" ref={errorMessage} role="alert" tabIndex={-1}>{error}</p>}
       <button className="primary" disabled={!transcript.trim() || listening} onClick={() => process()}>Review order</button>
     </>}
     {candidate && <>

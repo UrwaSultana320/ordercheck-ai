@@ -17,6 +17,7 @@ export function parseQuantity(value: string): number | null {
 }
 const uncertain = /\b(?:maybe|perhaps|possibly|not sure|I think|about|approximately|either|unsure|around|not)\b/i;
 const sizePattern = /\b\d+(?:\.\d+)?\s*(?:millilitres?|milliliters?|kilograms?|grams?|litres?|liters?|ml|kg|g|l|oz)\b/i;
+const quantityStart = "(?:\\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s+(?!ml\\b|g\\b|kg\\b|l\\b|grams?\\b|kilograms?\\b|lit(?:re|er)s?\\b|oz\\b|millilit(?:re|er)s?\\b)";
 const sameTarget = (a: Correction, b: Correction) =>
   a.field === b.field && ("index" in a ? "index" in b && a.index === b.index : !("index" in b));
 const clean = (s: string) => s.replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "").trim();
@@ -25,16 +26,24 @@ export function extractSpokenOrder(transcript: string): OrderCandidate {
   if (!transcript.trim() || transcript.length > 20000) throw new Error("Enter an order transcript of 1 to 20,000 characters.");
   const candidate: OrderCandidate = { items: [], unresolved: [] };
   let text = transcript.trim();
-  const platform = text.match(/\b(?:I\s+)?(?:ordered|bought|purchased)\s+from\s+([^.!?,]+)(?:[.!?,]|$)/i);
+  // Speech providers often omit punctuation. Stop before another order clause
+  // or an explicit product quantity; never use a product catalog to infer a shop.
+  const platform = text.match(/^(?:I\s+)?(?:ordered|bought|purchased)\s+from\s+([^.!?,;\n]+)/i);
   if (platform) {
-    candidate.platform = clean(platform[1]);
-    if (uncertain.test(platform[1])) candidate.unresolved.push({ field: "platform" });
-    text = text.replace(platform[0], " ");
+    const tail = platform[1];
+    const clause = tail.search(/\s+(?:(?:and|then)\s+)?I\s+(?:ordered|bought|purchased)\b/i);
+    // Prefer an explicit clause boundary, even if the shop name includes a
+    // number word. Without one, a stated quantity can introduce the products.
+    const boundary = clause >= 0 ? clause : tail.search(new RegExp("\\s+" + quantityStart, "i"));
+    const name = boundary >= 0 ? tail.slice(0, boundary) : tail;
+    candidate.platform = clean(name);
+    if (uncertain.test(name)) candidate.unresolved.push({ field: "platform" });
+    text = text.slice(platform[0].length - tail.length + name.length);
   }
+  text = clean(text).replace(/^(?:(?:and|then)\s+)?(?:I\s+)?(?:ordered|bought|purchased)\b\s*/i, "");
   text = text.replace(/\b(?:I\s+)?(?:ordered|bought|purchased)\s+/gi, "");
   // Split only at a stated new quantity or an explicit new sentence/line.
   // Ambiguous lists stay visible and require correction instead of guessing associations.
-  const quantityStart = "(?:\\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s+(?!ml\\b|g\\b|kg\\b|l\\b|grams?\\b|kilograms?\\b|lit(?:re|er)s?\\b|oz\\b|millilit(?:re|er)s?\\b)";
   const pieces = text.split(new RegExp("(?:,?\\s+and\\s+|,\\s*)(?=" + quantityStart + ")|[;\\n]+|[.!?]\\s+(?!\\d)", "i"));
   for (const raw of pieces.filter(s => clean(s))) {
     let rest = clean(raw);
@@ -79,7 +88,7 @@ export function extractSpokenOrder(transcript: string): OrderCandidate {
     if (!rest || /\band\b/i.test(rest) || (uncertain.test(raw) && !candidate.unresolved.some(t => "index" in t && t.index === index && t.field !== "quantity"))) candidate.unresolved.push({ index, field: "name" });
     candidate.items.push(item);
   }
-  if (!candidate.items.length) throw new Error("No products heard. Describe a product or type your order.");
+  if (!candidate.items.length) throw new Error(candidate.platform ? "I found the platform, but I couldn't identify the products. Check the transcript and try again." : "I couldn't identify any products. Check the transcript and try again.");
   return candidate;
 }
 export function fieldValue(item: Item, field: OrderField): string {

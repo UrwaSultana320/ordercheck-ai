@@ -13,6 +13,7 @@ export interface Recognition {
   onerror: ((e: { error: string }) => void) | null;
   onresult: ((e: RecognitionResult) => void) | null;
   start(): void;
+  stop?(): void;
   abort(): void;
 }
 type SpeechJob = { text: string; priority: number; done: () => void };

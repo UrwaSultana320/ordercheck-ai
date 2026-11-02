@@ -5,6 +5,44 @@ import { BrowserTranscription } from "../src/lib/order-transcription";
 import type { Recognition } from "../src/lib/voice";
 
 describe("spoken order extraction and confirmation", () => {
+  it.each([
+    "I ordered from Daraz. I ordered",
+    "I ordered from Daraz I ordered",
+    "I ordered from Daraz and I ordered",
+    "I bought from Daraz then I bought",
+    "I purchased from Daraz and I purchased",
+    "I ordered from Daraz I bought",
+  ])("keeps the platform separate from speech-style products: %s", prefix => {
+    const d = extractSpokenOrder(`${prefix} two Dove Hair Fall Rescue shampoos 400 millilitres and one Nescafe Classic coffee 200 grams`);
+    expect(d.platform).toBe("Daraz");
+    expect(d.items.map(i => [i.name, i.quantity, i.size])).toEqual([["Dove Hair Fall Rescue shampoos", 2, "400 ml"], ["Nescafe Classic coffee", 1, "200 g"]]);
+    expect(d.unresolved).toEqual([]);
+  });
+  it("supports a quantity boundary without a repeated order clause", () => {
+    const d = extractSpokenOrder("I ordered from Amazon two black shirts size medium and one pair of shoes size 7");
+    expect(d.platform).toBe("Amazon");
+    expect(d.items).toHaveLength(2);
+    expect(d.items[0]).toMatchObject({ name: "shirts", quantity: 2, size: "medium", attributes: { color: "black" } });
+    expect(d.items[1]).toMatchObject({ name: "pair of shoes", quantity: 1, size: "7" });
+  });
+  it.each(["I ordered from The Local Market I ordered two soaps", "I ordered from The Local Market two soaps"])("preserves multi-word platform names: %s", text => {
+    expect(extractSpokenOrder(text)).toMatchObject({ platform: "The Local Market", items: [{ name: "soaps", quantity: 2 }] });
+  });
+  it("does not invent a missing platform or correct misheard brands", () => {
+    const d = extractSpokenOrder("I ordered two Dove shampoos");
+    expect(d.platform).toBeUndefined();
+    expect(d.items[0]).toMatchObject({ name: "Dove shampoos", quantity: 2 });
+    expect(extractSpokenOrder("I ordered from that house I ordered one Oneness Cafe")).toMatchObject({ platform: "that house", items: [{ name: "Oneness Cafe" }] });
+  });
+  it("prefers a repeated order clause when a multi-word shop includes a number word", () => {
+    expect(extractSpokenOrder("I ordered from The One Shop I ordered two soaps")).toMatchObject({ platform: "The One Shop", items: [{ name: "soaps", quantity: 2 }] });
+  });
+  it("preserves repeated product clauses in existing order lists", () => {
+    expect(extractSpokenOrder("I ordered one soap and I ordered two shirts").items.map(i => [i.name, i.quantity])).toEqual([["soap", 1], ["shirts", 2]]);
+  });
+  it.each(["I ordered from Daraz", "I ordered from Daraz I ordered", "I ordered from Daraz and I ordered"])("rejects a platform without products: %s", text => {
+    expect(() => extractSpokenOrder(text)).toThrow("I found the platform");
+  });
   it("extracts one product and never invents omitted information", () => {
     const d = extractSpokenOrder("I ordered Dove shampoo.");
     expect(d.platform).toBeUndefined();
@@ -114,12 +152,64 @@ class FakeRecognition implements Recognition {
   onerror: Recognition["onerror"] = null; onresult: Recognition["onresult"] = null;
   constructor() { FakeRecognition.last = this; }
   start() { this.onstart?.(); }
+  stop = vi.fn(() => this.onend?.());
   abort = vi.fn();
   result(text: string) { this.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] }); }
 }
 afterEach(() => vi.useRealTimers());
 describe("bounded dictation provider", () => {
   const events = () => ({ started: vi.fn(), complete: vi.fn(), error: vi.fn() });
+  it("configures Pakistani English and an explicit US fallback without guessing provider support", () => {
+    const e = events();
+    const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+    p.start(e);
+    expect(FakeRecognition.last.lang).toBe("en-PK");
+    FakeRecognition.last.onerror?.({ error: "language-not-supported" });
+    expect(e.error).toHaveBeenCalledWith(expect.stringContaining("English (US) as a fallback"));
+    const fallback = new BrowserTranscription({ active: () => true, recognition: FakeRecognition }, "en-US");
+    fallback.start(e);
+    expect(FakeRecognition.last.lang).toBe("en-US");
+    fallback.cancel();
+  });
+  it("replaces interim slots with finals and removes withdrawn interim words", () => {
+    const e = events(); const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+    p.start(e); const rec = FakeRecognition.last;
+    const result = (texts: string[], resultIndex = 0, final = false) => rec.onresult?.({ resultIndex, results: texts.map(text => ({ isFinal: final, 0: { transcript: text } })) });
+    result(["two wrong"]);
+    result(["two soaps", "and one wrong"]);
+    result(["two soaps", "and one coffee"], 1);
+    result(["two soaps"], 1);
+    result(["two soaps", "and one tea"], 1, true);
+    p.stop();
+    expect(e.complete).toHaveBeenCalledExactlyOnceWith("two soaps and one tea");
+  });
+  it("waits for the final phrase after Finish and completes only once", () => {
+    vi.useFakeTimers(); const e = events();
+    const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+    p.start(e); const rec = FakeRecognition.last;
+    rec.stop.mockImplementation(() => {});
+    rec.result("two soaps"); p.stop(); p.stop();
+    expect(rec.stop).toHaveBeenCalledOnce();
+    expect(e.complete).not.toHaveBeenCalled();
+    rec.result("two soaps and one coffee"); rec.onend?.();
+    vi.advanceTimersByTime(60001);
+    expect(e.complete).toHaveBeenCalledExactlyOnceWith("two soaps and one coffee");
+    expect(rec.abort).toHaveBeenCalledOnce();
+  });
+  it("bounds a missing end event and cancellation during finalization never completes", () => {
+    vi.useFakeTimers(); const e = events();
+    const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+    p.start(e); FakeRecognition.last.stop.mockImplementation(() => {});
+    FakeRecognition.last.result("one soap"); p.stop(); vi.advanceTimersByTime(1501);
+    expect(e.complete).toHaveBeenCalledExactlyOnceWith("one soap");
+    e.complete.mockClear(); p.start(e); const rec = FakeRecognition.last;
+    rec.stop.mockImplementation(() => {}); rec.result("cancelled soap"); p.stop();
+    const lateEnd = rec.onend!; const lateResult = rec.onresult!; p.cancel();
+    lateEnd(); lateResult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: "late soap" } }] });
+    vi.advanceTimersByTime(60001);
+    expect(e.complete).not.toHaveBeenCalled();
+    expect(rec.abort).toHaveBeenCalledOnce();
+  });
   it("reports unsupported recognition and microphone permission denial", () => {
     const e = events();
     new BrowserTranscription({ active: () => true }).start(e);

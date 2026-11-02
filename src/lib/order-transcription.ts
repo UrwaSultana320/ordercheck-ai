@@ -1,5 +1,12 @@
 import { browserVoiceHost, type Recognition, type VoiceHost } from "./voice";
 
+export const orderDictationLocales = [
+  { value: "en-PK", label: "English (Pakistan)" },
+  { value: "en-US", label: "English (US) — fallback" },
+] as const;
+export type OrderDictationLocale = typeof orderDictationLocales[number]["value"];
+export const defaultOrderDictationLocale: OrderDictationLocale = "en-PK";
+
 export interface TranscriptionProvider {
   start(events: { started(): void; complete(text: string): void; error(message: string): void }, limitMs?: number): void;
   stop(): void;
@@ -11,7 +18,7 @@ export class BrowserTranscription implements TranscriptionProvider {
   private timer?: ReturnType<typeof setTimeout>;
   private silence?: ReturnType<typeof setTimeout>;
   private end?: () => void;
-  constructor(private host: Pick<VoiceHost, "recognition" | "active">) {}
+  constructor(private host: Pick<VoiceHost, "recognition" | "active">, private locale: OrderDictationLocale = defaultOrderDictationLocale) {}
   start(events: Parameters<TranscriptionProvider["start"]>[0], limitMs = 60000) {
     this.cancel();
     const Constructor = this.host.recognition;
@@ -19,41 +26,52 @@ export class BrowserTranscription implements TranscriptionProvider {
     if (!this.host.active()) { events.error("Return to this page to start listening."); return; }
     const rec = new Constructor();
     this.rec = rec;
-    rec.lang = "en-US";
+    rec.lang = this.locale;
     rec.continuous = true;
     rec.interimResults = true;
     const parts: string[] = [];
+    let stopping = false;
     const finish = () => {
       if (this.rec !== rec) return;
       if (!this.host.active()) { this.cancel(); return; }
-      const text = parts.join(" ").trim();
+      const text = parts.join(" ").trim().replace(/\bstop recording[.!?]*$/i, "").trim();
       this.cancel();
       events.complete(text);
     };
-    this.end = finish;
+    const stop = () => {
+      if (this.rec !== rec || stopping) return;
+      stopping = true;
+      clearTimeout(this.timer); clearTimeout(this.silence);
+      // stop() lets the provider deliver its last result before onend. Bound
+      // the wait in case a browser never emits onend; cancellation still aborts.
+      this.timer = setTimeout(finish, 1500);
+      try { if (rec.stop) rec.stop(); else finish(); } catch { finish(); }
+    };
+    this.end = stop;
     rec.onstart = () => { if (this.rec === rec) events.started(); };
     rec.onresult = e => {
       if (this.rec !== rec) return;
       if (!this.host.active()) { this.cancel(); return; }
       for (let i = e.resultIndex; i < e.results.length; i++) parts[i] = e.results[i][0].transcript;
+      // Interim entries can disappear from the provider's current result list.
+      parts.length = e.results.length;
+      if (stopping) return;
       const spoken = parts.join(" ").trim();
-      if (/^(cancel|start again)[.!?]*$/i.test(spoken)) { finish(); return; }
-      if (/\bstop recording[.!?]*$/i.test(spoken)) {
-        parts.splice(0, parts.length, spoken.replace(/\bstop recording[.!?]*$/i, "").trim());
-        finish(); return;
-      }
-      if (limitMs <= 15000 && e.results[e.results.length - 1]?.isFinal) { finish(); return; }
+      const final = e.results[e.results.length - 1]?.isFinal;
+      if (final && /^(cancel|start again)[.!?]*$/i.test(spoken)) { finish(); return; }
+      if (final && /\bstop recording[.!?]*$/i.test(spoken)) { stop(); return; }
+      if (limitMs <= 15000 && final) { stop(); return; }
       clearTimeout(this.silence);
-      this.silence = setTimeout(finish, 4500);
+      this.silence = setTimeout(stop, 4500);
     };
     rec.onend = finish;
     rec.onerror = e => {
       if (this.rec !== rec) return;
       if (!this.host.active()) { this.cancel(); return; }
       this.cancel();
-      events.error(e.error === "not-allowed" || e.error === "service-not-allowed" ? "Microphone permission denied. Allow microphone access or type your order." : `Listening stopped (${e.error}). Try again or type your order.`);
+      events.error(e.error === "language-not-supported" ? "Your browser provider does not support the selected speech language. Select English (US) as a fallback and try again, or type your order." : e.error === "not-allowed" || e.error === "service-not-allowed" ? "Microphone permission denied. Allow microphone access or type your order." : `Listening stopped (${e.error}). Try again or type your order.`);
     };
-    this.timer = setTimeout(finish, limitMs);
+    this.timer = setTimeout(stop, limitMs);
     try { rec.start(); } catch { this.cancel(); events.error("Could not start the microphone. Try again or type your order."); }
   }
   stop() { this.end?.(); }
@@ -64,8 +82,8 @@ export class BrowserTranscription implements TranscriptionProvider {
     if (rec) { rec.onstart = rec.onresult = rec.onend = rec.onerror = null; try { rec.abort(); } catch { /* already ended */ } }
   }
 }
-export function createOrderTranscription(): TranscriptionProvider {
-  return new BrowserTranscription(browserVoiceHost());
+export function createOrderTranscription(locale: OrderDictationLocale = defaultOrderDictationLocale): TranscriptionProvider {
+  return new BrowserTranscription(browserVoiceHost(), locale);
 }
 /** Lifecycle/device events are isolated here for replacement by a mobile adapter. */
 export function onOrderInterruption(cancel: () => void): () => void {
