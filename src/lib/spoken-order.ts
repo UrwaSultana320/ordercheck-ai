@@ -21,6 +21,7 @@ const quantityStart = "(?:\\d+|a|an|one|two|three|four|five|six|seven|eight|nine
 const sameTarget = (a: Correction, b: Correction) =>
   a.field === b.field && ("index" in a ? "index" in b && a.index === b.index : !("index" in b));
 const clean = (s: string) => s.replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "").trim();
+const speechConnector = "(?:and\\s+then|then|next|also)\\s+";
 /** Conservative English extraction: no catalog lookups or implicit quantity/attributes. */
 export function extractSpokenOrder(transcript: string): OrderCandidate {
   if (!transcript.trim() || transcript.length > 20000) throw new Error("Enter an order transcript of 1 to 20,000 characters.");
@@ -44,9 +45,13 @@ export function extractSpokenOrder(transcript: string): OrderCandidate {
   text = text.replace(/\b(?:I\s+)?(?:ordered|bought|purchased)\s+/gi, "");
   // Split only at a stated new quantity or an explicit new sentence/line.
   // Ambiguous lists stay visible and require correction instead of guessing associations.
-  const pieces = text.split(new RegExp("(?:,?\\s+and\\s+|,\\s*)(?=" + quantityStart + ")|[;\\n]+|[.!?]\\s+(?!\\d)", "i"));
+  const pieces = text.split(new RegExp("(?:,?\\s+and\\s+|,\\s*)(?=(?:" + speechConnector + ")?" + quantityStart + ")|[;\\n]+|[.!?]\\s+(?!\\d)", "i"));
   for (const raw of pieces.filter(s => clean(s))) {
     let rest = clean(raw);
+    // A connector is disposable only at this clause's start before a valid
+    // quantity, never inside a product name or before a size measurement.
+    const connector = rest.match(new RegExp("^" + speechConnector + "(?=" + quantityStart + ")", "i"));
+    if (connector && parseQuantity(rest.slice(connector[0].length).split(/\s/)[0]) !== null) rest = rest.slice(connector[0].length);
     const item: Item = { id: newId(), name: "", brand: "", variant: "", size: "", quantity: null, verified: 0 };
     const index = candidate.items.length;
     const alternateQuantity = rest.match(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:or|to)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+/i);

@@ -5,6 +5,32 @@ import { BrowserTranscription } from "../src/lib/order-transcription";
 import type { Recognition } from "../src/lib/voice";
 
 describe("spoken order extraction and confirmation", () => {
+  it.each(["", "then ", "and then ", "next ", "also ", "Then "])("extracts quantity after a leading speech connector: %s", prefix => {
+    const d = extractSpokenOrder(`${prefix}one Nescafe Classic coffee, 200 grams`);
+    expect(d.items).toHaveLength(1);
+    expect(d.items[0]).toMatchObject({ quantity: 1, name: "Nescafe Classic coffee", size: "200 g" });
+    expect(d.unresolved).toEqual([]);
+  });
+  it.each(["; Then ", ". Next ", "\nAlso ", ", then ", " and then ", " and also "])("recognizes connectors at existing product boundaries: %s", separator => {
+    const d = extractSpokenOrder(`two soaps${separator}one coffee 200 grams`);
+    expect(d.items.map(i => [i.name, i.quantity, i.size])).toEqual([["soaps", 2, ""], ["coffee", 1, "200 g"]]);
+    expect(d.unresolved).toEqual([]);
+  });
+  it.each(["then two soaps", "next 3 soaps", "also twelve soaps", "and then a soap", "then 999 soaps"])("accepts existing valid quantity forms after connectors: %s", text => {
+    const d = extractSpokenOrder(text);
+    expect(d.items[0].quantity).not.toBeNull();
+    expect(d.unresolved).toEqual([]);
+  });
+  it.each(["Then soap", "Next Generation coffee", "Also tea", "then 0 soaps", "then 1000 soaps", "then -1 soaps", "then 1.5 soaps", "then thirteen soaps"])("preserves leading words without a valid quantity: %s", text => {
+    expect(extractSpokenOrder(text).items[0]).toMatchObject({ name: text, quantity: null });
+  });
+  it.each(["one Better Then coffee", "one Next One coffee", "one Also One tea"])("preserves connectors inside product names: %s", text => {
+    expect(extractSpokenOrder(text).items[0]).toMatchObject({ name: text.slice(4), quantity: 1 });
+  });
+  it("keeps a connector before a measurement and preserves ambiguous quantities", () => {
+    expect(extractSpokenOrder("Next 200 grams coffee").items[0]).toMatchObject({ name: "Next coffee", size: "200 g", quantity: null });
+    expect(extractSpokenOrder("then one or two soaps").items[0]).toMatchObject({ name: "soaps", quantity: null });
+  });
   it.each([
     "I ordered from Daraz. I ordered",
     "I ordered from Daraz I ordered",

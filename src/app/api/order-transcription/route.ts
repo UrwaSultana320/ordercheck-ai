@@ -7,8 +7,9 @@ export const maxDuration = 60;
 const transcription = {
   model: "whisper-large-v3",
   language: "en",
+  temperature: "0",
   response_format: "json",
-  prompt: "This is an e-commerce order spoken in Pakistani English. Preserve retailer names, brand names, product names, quantities, numbers, sizes, colours, flavours, shades, variants and product types exactly as spoken. Do not invent missing information.",
+  prompt: "This is an e-commerce shopping order spoken in Pakistani English. Transcribe literally. Preserve retailer names, brand names, product names, quantities, numbers, sizes, colours, flavours and variants exactly as spoken. Shopping names may be uncommon proper nouns. Do not paraphrase, correct, guess, or invent words.",
 };
 const maxBodyBytes = maxOrderAudioBytes + 64 * 1024;
 const reply = (body: { error: string } | { text: string }, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });

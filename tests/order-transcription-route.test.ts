@@ -31,13 +31,16 @@ describe("server-only order transcription route", () => {
     const body = options.body as FormData;
     expect(body.get("model")).toBe("whisper-large-v3");
     expect(body.get("language")).toBe("en");
+    expect(body.get("temperature")).toBe("0");
     expect(body.get("response_format")).toBe("json");
     const file = body.get("file") as File;
     expect(file.name).toBe(name);
     expect(file.type).toBe(type);
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes);
     expect(body.get("prompt")).toContain("Pakistani English");
-    expect(body.get("prompt")).toContain("Do not invent missing information");
+    expect(body.get("prompt")).toContain("Transcribe literally.");
+    expect(body.get("prompt")).toContain("Shopping names may be uncommon proper nouns.");
+    expect(body.get("prompt")).toContain("Do not paraphrase, correct, guess, or invent words.");
     expect(body.get("prompt")).not.toMatch(/Daraz|Dove|Nescafe|JSON/i);
     expect(options.signal).toBeInstanceOf(AbortSignal);
   });
