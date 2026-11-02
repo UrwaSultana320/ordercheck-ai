@@ -130,7 +130,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     <h2 id="voice-order-heading" ref={heading} tabIndex={-1}>{candidate ? editing ? "Change one detail" : "Review your order" : "Tell OrderCheck what I ordered"}</h2>
     <p>Describe your order naturally. Include the product name, quantity, size and variant when you know them.</p>
     <p aria-live="polite" aria-atomic="true">{status}</p>
-    <p><strong>Order microphone: {listening ? "listening" : "off"}.</strong> Audio is sent securely to OpenAI for transcription only when you explicitly record an order. OrderCheck does not store the recording after transcription. Optional short spoken responses use your browser speech provider.</p>
+    <p><strong>Order microphone: {listening ? "listening" : "off"}.</strong> Audio is sent securely to Groq for transcription only when you explicitly record an order. OrderCheck does not store the recording after transcription. Optional short spoken responses use your browser speech provider.</p>
     <label><input type="checkbox" checked={consent} onChange={e => { setConsent(e.target.checked); if (!e.target.checked) cancelListening(); }} /> Allow order audio transcription and optional spoken responses</label>
     <p>Order dictation uses an English language hint and supports Pakistani English speech. Check the transcript; transcription can still mishear names.</p>
     {!candidate && <>

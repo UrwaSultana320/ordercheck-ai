@@ -127,7 +127,7 @@ describe("bounded server-backed order recorder", () => {
     expect(f.events.complete).not.toHaveBeenCalled(); expect(f.events.error).not.toHaveBeenCalled();
   });
   it.each([
-    [() => Response.json({ error: "Order transcription is not configured: OPENAI_API_KEY" }, { status: 503 }), "not configured"],
+    [() => Response.json({ error: "Order transcription is not configured for this Preview." }, { status: 503 }), "not configured"],
     [() => Response.json({ error: "Transcription API failed" }, { status: 502 }), "API failed"],
     [() => new Response("invalid json"), "malformed response"],
     [() => Response.json({ text: 5 }), "malformed response"],
