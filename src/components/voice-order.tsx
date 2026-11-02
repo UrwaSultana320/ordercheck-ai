@@ -142,6 +142,10 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     {error && <p id="order-transcript-error" ref={errorMessage} role="alert" tabIndex={-1}>{error}</p>}
     {!candidate && <button className="primary" disabled={!transcript.trim() || busy} onClick={() => process()}>Review order</button>}
     {candidate && <>
+      <section aria-labelledby="raw-transcription-heading">
+        <h3 id="raw-transcription-heading">Raw transcription</h3>
+        <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{transcript}</p>
+      </section>
       {candidate.platform && <p>Platform: {candidate.platform}</p>}
       <ol>{candidate.items.map((item, index) => <li key={item.id}><h3>Product {index + 1}: {item.name || "Name needs confirmation"}</h3><dl>{orderFields.filter(field => field !== "name" && fieldValue(item, field)).map(field => <div key={field}><dt>{field}</dt><dd>{fieldValue(item, field)}</dd></div>)}</dl></li>)}</ol>
       {candidate.unresolved.length > 0 && <p>Needs confirmation: {candidate.unresolved.map(t => `${"index" in t ? `product ${t.index + 1} ` : ""}${t.field}`).join(", ")}.</p>}

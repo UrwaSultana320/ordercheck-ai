@@ -243,20 +243,28 @@ test("mocked permission denial, cancel, restart, and Escape leave microphone off
 });
 
 test("successful dictation can be inspected and edited; explicit save persists no audio or transcript", async ({ page }) => {
-  await mockSpeech(page); await mockRecording(page, "I ordered from Shop I ordered two soaps and one coffee 200 g");
+  const transcript = "I ordered from Shop.\nI ordered two soaps  and one coffee 200 g";
+  await mockSpeech(page); await mockRecording(page, transcript);
   await openVoice(page);
   await page.getByLabel("Keep orders in this browser tab for this session").check();
   await page.getByLabel("Allow order audio transcription", { exact: false }).check();
   await page.getByRole("button", { name: "Start order recording", exact: true }).click();
   await page.getByRole("button", { name: "Finish recording", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused();
+  const raw = page.getByRole("region", { name: "Raw transcription", exact: true });
+  await expect(raw).toBeVisible();
+  expect(await raw.locator("p").textContent()).toBe(transcript);
+  await expect(raw.locator("p")).toHaveCSS("white-space", "pre-wrap");
+  expect(await raw.evaluate(section => section.nextElementSibling?.textContent)).toBe("Platform: Shop");
   await page.getByRole("button", { name: "Read back order", exact: true }).click();
   await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
   await page.getByRole("button", { name: "Edit order transcript", exact: true }).click();
   await expect(page.getByLabel("Order transcript", { exact: true })).toBeEditable();
-  await expect(page.getByLabel("Order transcript", { exact: true })).toHaveValue("I ordered from Shop I ordered two soaps and one coffee 200 g");
+  await expect(raw).toHaveCount(0);
+  await expect(page.getByLabel("Order transcript", { exact: true })).toHaveValue(transcript);
   await review(page, "I ordered from Shop I ordered three soaps and one coffee 200 g");
+  expect(await raw.locator("p").textContent()).toBe("I ordered from Shop I ordered three soaps and one coffee 200 g");
   await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
   const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
   expect(saved.orders[0].items.map((item: { quantity: number }) => item.quantity)).toEqual([3, 1]);
