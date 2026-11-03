@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { analyzeFrame, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE, type FrameMetrics } from "../src/lib/camera-guidance";
+import { analyzeFrame, AutomaticOcrViews, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE, type FrameMetrics } from "../src/lib/camera-guidance";
+import { PresentationGate } from "../src/lib/session";
 
-const good: FrameMetrics = { brightness: 120, motion: 1, changedFraction: 0.01, edgeDensity: 0.12, sharpness: 400, centerShare: 0.4, centroidX: 0.5, centroidY: 0.5 };
+const good: FrameMetrics = { brightness: 120, motion: 1, changedFraction: 0.01, edgeDensity: 0.12, centralEdgeDensity: 0.25, borderEdgeDensity: 0, borderShare: 0, sharpness: 400, centerShare: 0.4, centroidX: 0.5, centroidY: 0.5 };
 function frame(pixel: (x: number, y: number) => number) {
   const rgba = new Uint8ClampedArray(96 * 72 * 4);
   for (let y = 0; y < 72; y++) for (let x = 0; x < 96; x++) {
@@ -50,6 +51,63 @@ describe("camera frame analysis", () => {
   });
 });
 describe("readiness and announcements", () => {
+  it("measures small central content and border clipping, prioritizing dark and motion", () => {
+    const small = frame((x, y) => x > 44 && x < 51 && y > 32 && y < 39 ? ((x + y) % 4 < 2 ? 70 : 210) : 140);
+    const first = analyzeFrame(small, 96, 72);
+    const far = analyzeFrame(small, 96, 72, first.luminance).metrics;
+    expect(far.centralEdgeDensity).toBeLessThan(0.045);
+    expect(frameGuidance(far)).toBe(GUIDANCE.detail);
+    const full = frame((x, y) => (x + y) % 4 < 2 ? 70 : 210);
+    const prior = analyzeFrame(full, 96, 72);
+    const close = analyzeFrame(full, 96, 72, prior.luminance).metrics;
+    expect(close.borderEdgeDensity).toBeGreaterThan(0.22);
+    expect(close.borderShare).toBeGreaterThan(0.32);
+    expect(frameGuidance(close)).toBe(GUIDANCE.clipped);
+    expect(frameGuidance({ ...close, brightness: 15, motion: 30 })).toBe(GUIDANCE.dark);
+    expect(frameGuidance({ ...far, motion: 30 })).toBe(GUIDANCE.moving);
+    expect(frameGuidance({ ...good, centerShare: 0.01, sharpness: 20 })).toBe(GUIDANCE.center);
+  });
+  it("does not alternate distance instructions for single noisy samples", () => {
+    const guidance = new CameraGuidance();
+    const far = { ...good, edgeDensity: 0.01 };
+    const close = { ...good, borderEdgeDensity: 0.5, borderShare: 0.5 };
+    expect(guidance.sample(far).message).toBe(GUIDANCE.moving);
+    expect(guidance.sample(far).message).toBe(GUIDANCE.detail);
+    expect(guidance.sample(close).message).toBe(GUIDANCE.detail);
+    expect(guidance.sample(far).message).toBe(GUIDANCE.detail);
+    guidance.sample(close);
+    expect(guidance.sample(close).message).toBe(GUIDANCE.clipped);
+    expect(guidance.sample({ ...good, brightness: 10 }).message).toBe(GUIDANCE.dark);
+  });
+  it("allows ready OCR even when the legacy gate rejects handheld stability", () => {
+    const guidance = new CameraGuidance(), legacy = new PresentationGate();
+    const views = new AutomaticOcrViews();
+    legacy.sample([100]);
+    for (let i = 0; i < 3; i++) {
+      expect(legacy.sample([i % 2 ? 100 : 107])).toBe(false);
+      expect(guidance.sample({ ...good, motion: 7 }).ready).toBe(i === 2);
+    }
+    expect(views.canAttempt()).toBe(true);
+  });
+  it("blocks repeated attempts on an unreadable view until a sustained different view", () => {
+    const views = new AutomaticOcrViews();
+    const same = new Float32Array(100).fill(120);
+    views.mark(same);
+    for (let i = 0; i < 20; i++) views.observe(same);
+    expect(views.canAttempt()).toBe(false);
+    views.observe(new Float32Array(100).fill(170));
+    views.observe(new Float32Array(100).fill(170));
+    expect(views.canAttempt()).toBe(false); // Exposure alone is not a new view.
+    const rotated = Float32Array.from({ length: 100 }, (_, i) => i % 2 ? 70 : 210);
+    views.observe(rotated);
+    expect(views.canAttempt()).toBe(false);
+    views.observe(same);
+    expect(views.canAttempt()).toBe(false);
+    views.observe(rotated); views.observe(rotated);
+    expect(views.canAttempt()).toBe(true);
+    views.mark(rotated);
+    expect(views.canAttempt()).toBe(false);
+  });
   it("requires three consecutive good frames and resets on any bad sample or session reset", () => {
     const guidance = new CameraGuidance();
     expect(guidance.sample(good).ready).toBe(false);

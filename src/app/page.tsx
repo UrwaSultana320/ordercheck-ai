@@ -673,9 +673,9 @@ export default function Home() {
                 <section className="panel">
                   <h2>Your camera assistant</h2>
                   <p>
-                    Camera access is only for scanning. Put the phone on a
-                    stable support, rear camera toward one package about 20 cm
-                    away. Rotate the package slowly. Different products can
+                    Camera access is only for scanning. Hold the phone steady
+                    with the rear camera toward one product. Follow the camera
+                    guidance and rotate the product slowly when asked. Different products can
                     continue automatically. Repeated identities need
                     confirmation.
                   </p>
@@ -715,7 +715,7 @@ export default function Home() {
                     </button>
                   </div>
                   <p>
-                    Automatic OCR reads well-lit, steady, detailed snapshots, one at a time. Guidance estimates image quality, not product location or distance. You can always choose Read label with OCR.{" "}
+                    Automatic OCR reads well-lit, steady, detailed snapshots, one at a time. Camera instructions speak during scanning, even when general narration is off. Guidance uses image detail to suggest framing; it cannot measure distance. You can always choose Read label with OCR.{" "}
                     {a.ocrTime !== null &&
                       `Last OCR job: ${a.ocrTime} ms on this device.`}{" "}
                     Unknown codes require a readable label. The catalog contains

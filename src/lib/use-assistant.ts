@@ -13,7 +13,7 @@ import {
   type Attempt,
 } from "./engine";
 import { OcrReader } from "./media";
-import { analyzeFrame, CameraGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
+import { analyzeFrame, AutomaticOcrViews, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
 import { orderStorage } from "./order-storage";
 import { newId } from "./id";
 import { VoiceController, browserVoiceHost } from "./voice";
@@ -81,6 +81,9 @@ export function useAssistant(
     sessionId = useRef(""),
     mounted = useRef(false);
   const gate = useRef(new PresentationGate());
+  const ocrViews = useRef(new AutomaticOcrViews());
+  const latestView = useRef<Float32Array | undefined>(undefined);
+  const ocrRecovery = useRef(false);
   const actions = useRef<{
     command(c: Command): void;
     stop(): void;
@@ -121,6 +124,9 @@ export function useAssistant(
     ocrBusy.current = false;
     setCamera(false);
     setCameraGuidance("");
+    ocrViews.current = new AutomaticOcrViews();
+    latestView.current = undefined;
+    ocrRecovery.current = false;
   }
   function stop() {
     releaseCamera();
@@ -355,7 +361,7 @@ export function useAssistant(
       reader.current = new OcrReader();
       setCamera(true);
       phaseTo("scanning");
-      setCameraGuidance("Camera started. Hold one label in view.");
+      setCameraGuidance(GUIDANCE.started);
       const analysis = document.createElement("canvas");
       analysis.width = 96;
       analysis.height = 72;
@@ -366,9 +372,9 @@ export function useAssistant(
       const guidance = new CameraGuidance();
       const announcements = new GuidanceAnnouncements();
       let previous: Float32Array | undefined;
-      let presentation = gate.current.epoch;
       let analysisFailed = false;
-      let guidanceSpeaking = false;
+      let guidanceSpeaking = true;
+      void announce(GUIDANCE.started, 1, true).finally(() => { guidanceSpeaking = false; });
       timer.current = setInterval(() => {
         const v = video.current;
         if (!v?.videoWidth || epoch !== generation.current ||
@@ -382,29 +388,32 @@ export function useAssistant(
           ctx.drawImage(v, 0, 0, 96, 72);
           const frame = analyzeFrame(ctx.getImageData(0, 0, 96, 72).data, 96, 72, previous);
           previous = frame.luminance;
+          latestView.current = frame.luminance;
           // Preserve the existing presentation/duplicate boundary independently.
           tinyContext.drawImage(v, 0, 0, 16, 16);
           const rgba = tinyContext.getImageData(0, 0, 16, 16).data;
           const pixels = Array.from({ length: 256 }, (_, i) =>
             (rgba[i * 4] + rgba[i * 4 + 1] + rgba[i * 4 + 2]) / 3);
-          const stable = gate.current.sample(pixels);
-          if (presentation !== gate.current.epoch) {
-            presentation = gate.current.epoch;
-            guidance.reset();
-          }
+          gate.current.sample(pixels);
           if (!scanning) return;
+          ocrViews.current.observe(frame.luminance);
           const quality = guidance.sample(frame.metrics);
-          if (quality.ready && stable) {
-            if (gate.current.accept("ocr-frame")) void actions.current?.ocr(true);
+          if (quality.ready && ocrViews.current.canAttempt()) {
+            void actions.current?.ocr(true);
           } else {
+            // Recovery stays visible on the unreadable view until repositioned;
+            // otherwise visuals follow state immediately, independently of speech.
+            const message = ocrRecovery.current && !ocrViews.current.canAttempt() &&
+              frameGuidance(frame.metrics) === null
+              ? GUIDANCE.unreadable : quality.ready ? GUIDANCE.moving : quality.message;
+            setCameraGuidance(message);
             const instruction = !guidanceSpeaking && announcements.next(
-              quality.ready ? GUIDANCE.moving : quality.message,
+              message,
               performance.now(),
             );
             if (instruction) {
-              setCameraGuidance(instruction);
               guidanceSpeaking = true;
-              void announce(instruction, 0).finally(() => { guidanceSpeaking = false; });
+              void announce(instruction, 0, true).finally(() => { guidanceSpeaking = false; });
             }
           }
         } catch {
@@ -412,7 +421,7 @@ export function useAssistant(
           guidance.reset();
           if (scanning) {
             setCameraGuidance(GUIDANCE.unavailable);
-            void announce(GUIDANCE.unavailable, 0);
+            void announce(GUIDANCE.unavailable, 0, true);
           }
         }
       }, 700);
@@ -420,10 +429,9 @@ export function useAssistant(
       if (epoch === generation.current) {
         releaseCamera();
         phaseTo("error");
-        void announce(
-          `${error instanceof Error ? error.message : "Camera unavailable."} Allow camera access or enter a barcode or label below.`,
-          3,
-        );
+        const instruction = `${error instanceof Error ? error.message : "Camera unavailable."} Allow camera access or enter a barcode or label below.`;
+        setCameraGuidance(instruction);
+        void announce(instruction, 3, true);
       }
     }
   }
@@ -448,16 +456,25 @@ export function useAssistant(
       /* This frame need not contain a readable barcode. */
     }
     ocrBusy.current = true;
+    if (latestView.current) ocrViews.current.mark(latestView.current);
+    ocrRecovery.current = false;
     phaseTo("processing");
     if (automatic) setCameraGuidance(GUIDANCE.ready);
     try {
       if (automatic) {
-        await announce(GUIDANCE.ready, 1);
+        await announce(GUIDANCE.ready, 1, true);
         if (epoch !== generation.current || !mounted.current) return;
-      } else void announce("Reading a stable label. Stop remains available.", 0);
+      } else void announce("Reading a stable label. Stop remains available.", 0, true);
       const observed = await reader.current.read(canvas);
       if (epoch !== generation.current || !mounted.current) return;
       setOcrTime(observed.elapsedMs);
+      if (!snapshotBarcode && (observed.confidence < 35 || !/[\p{L}\p{N}]{3}/u.test(observed.text))) {
+        phaseTo("scanning");
+        ocrRecovery.current = true;
+        setCameraGuidance(GUIDANCE.unreadable);
+        void announce(GUIDANCE.unreadable, 1, true);
+        return;
+      }
       const before = document.createElement("canvas"),
         after = document.createElement("canvas");
       before.width = before.height = after.width = after.height = 16;
@@ -469,6 +486,8 @@ export function useAssistant(
         phaseTo("scanning");
         void announce(
           "Package moved while reading. Hold one label steady and retry.",
+          1,
+          true,
         );
         return;
       }
@@ -488,15 +507,12 @@ export function useAssistant(
         sessionId: sessionId.current,
         source: "ocr",
       });
-    } catch (error) {
+    } catch {
       if (epoch === generation.current) {
-        phaseTo("error");
-        void announce(
-          error instanceof Error
-            ? `Label reading failed: ${error.message}. Rotate the package and Retry, or enter a barcode.`
-            : "Label reading failed. Use Retry or enter a barcode.",
-          3,
-        );
+        phaseTo("scanning");
+        ocrRecovery.current = true;
+        setCameraGuidance(GUIDANCE.unreadable);
+        void announce(GUIDANCE.unreadable, 1, true);
       }
     } finally {
       canvas.width = canvas.height = 0;

@@ -104,7 +104,7 @@ test("import, duplicate confirmation, retry, Undo and optional session storage",
     page.getByRole("heading", { name: "No orders yet", exact: true }),
   ).toBeVisible();
 });
-test("no automatic speech, no-order start, denied camera and unsupported voice preserve fallback controls", async ({
+test("no general narration, no-order start, spoken camera denial and unsupported voice preserve fallback controls", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -123,8 +123,10 @@ test("no automatic speech, no-order start, denied camera and unsupported voice p
         ),
     });
     Object.defineProperty(window.speechSynthesis, "speak", {
-      value: () => {
-        throw new Error("Unrequested speech");
+      value: (utterance: SpeechSynthesisUtterance) => {
+        const host = window as unknown as { __cameraSpeech?: string[] };
+        (host.__cameraSpeech ??= []).push(utterance.text);
+        setTimeout(() => utterance.onend?.({} as SpeechSynthesisEvent), 10);
       },
     });
   });
@@ -134,10 +136,14 @@ test("no automatic speech, no-order start, denied camera and unsupported voice p
     .click();
   await expect(page.getByRole("status")).toContainText("No purchase reference");
   await addOrder(page);
+  expect(await page.evaluate(() => (window as unknown as { __cameraSpeech?: string[] }).__cameraSpeech ?? [])).toEqual([]);
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
     "Camera permission denied",
   );
+  expect(await page.evaluate(() => (window as unknown as { __cameraSpeech: string[] }).__cameraSpeech)).toEqual([
+    "Camera permission denied Allow camera access or enter a barcode or label below.",
+  ]);
   await page.getByLabel("Enter a barcode").fill("DEMO-OAT-ORIGINAL-1L");
   await page
     .getByRole("button", { name: "Check barcode", exact: true })
