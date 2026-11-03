@@ -99,6 +99,22 @@ export function extractSpokenOrder(transcript: string): OrderCandidate {
 export function fieldValue(item: Item, field: OrderField): string {
   return String((field === "color" || field === "flavour" || field === "type" ? item.attributes?.[field] : item[field]) ?? "");
 }
+export function hasRequiredQuantity(candidate: OrderCandidate): boolean {
+  return candidate.items.every(item => item.quantity !== null && Number.isInteger(item.quantity) && item.quantity >= 1 && item.quantity <= 999);
+}
+export function canConfirmField(candidate: OrderCandidate, target: Correction): boolean {
+  if (target.field === "platform") return !!candidate.platform?.trim() && candidate.platform.trim().length <= 120;
+  const item = candidate.items[target.index];
+  if (!item) return false;
+  if (target.field === "quantity") return hasRequiredQuantity({ ...candidate, items: [item] });
+  const value = fieldValue(item, target.field).trim();
+  const limit = target.field === "size" ? 60 : target.field === "brand" || target.field === "variant" ? 100 : 160;
+  return !!value && value.length <= limit;
+}
+// Only the explicit review action calls this; extraction never clears uncertainty.
+export function confirmCurrentDetails(candidate: OrderCandidate): OrderCandidate {
+  return { ...candidate, unresolved: candidate.unresolved.filter(target => !canConfirmField(candidate, target)) };
+}
 export function correctOrder(candidate: OrderCandidate, target: Correction, value: string): OrderCandidate {
   const next: OrderCandidate = { ...candidate, items: candidate.items.map(i => ({ ...i, attributes: i.attributes ? { ...i.attributes } : undefined })), unresolved: candidate.unresolved.filter(t => !sameTarget(t, target)) };
   if (target.field === "platform") next.platform = value.trim() || undefined;
@@ -115,9 +131,10 @@ export function correctOrder(candidate: OrderCandidate, target: Correction, valu
   return next;
 }
 export function orderReadback(candidate: OrderCandidate): string {
-  return `I heard: ${candidate.items.map(i => `${i.quantity ?? "Unconfirmed quantity of"} ${i.name}${[i.brand, i.variant, i.size, ...Object.entries(i.attributes ?? {}).map(([k,v]) => `${k}: ${v}`)].filter(Boolean).map(v => `, ${v}`).join("")}`).join("; ")}.${candidate.platform ? ` Platform: ${candidate.platform}.` : ""}${candidate.unresolved.length ? " Some fields need confirmation. Choose Change." : " Say Confirm, Change, or Start again."}`;
+  return `I heard: ${candidate.items.map(i => `${i.quantity ?? "Unconfirmed quantity of"} ${i.name}${[i.brand, i.variant, i.size, ...Object.entries(i.attributes ?? {}).map(([k,v]) => `${k}: ${v}`)].filter(Boolean).map(v => `, ${v}`).join("")}`).join("; ")}.${candidate.platform ? ` Platform: ${candidate.platform}.` : ""}${candidate.unresolved.length ? " Some fields need confirmation. Confirm current details if correct, or choose Change." : " Say Confirm, Change, or Start again."}`;
 }
 export function confirmOrder(candidate: OrderCandidate, confirmed: boolean, source: "voice" | "manual" = "voice"): Order {
+  if (!hasRequiredQuantity(candidate)) throw new Error("Quantity is required before this order can be saved.");
   if (!confirmed || candidate.unresolved.length) throw new Error("Review and confirm all uncertain fields before saving.");
   // Transcripts and audio are deliberately excluded from the saved canonical order.
   return orderSchema.parse({ id: newId(), label: candidate.platform || "My order", platform: candidate.platform, source, items: candidate.items });

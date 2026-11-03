@@ -1,10 +1,39 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { confirmOrder, correctOrder, extractSpokenOrder, orderReadback } from "../src/lib/spoken-order";
+import { canConfirmField, confirmCurrentDetails, confirmOrder, correctOrder, extractSpokenOrder, orderReadback, type Correction } from "../src/lib/spoken-order";
 import { orderSchema, savedStateSchema, verify } from "../src/lib/engine";
 import { BrowserTranscription } from "../src/lib/order-transcription";
 import type { Recognition } from "../src/lib/voice";
 
 describe("spoken order extraction and confirmation", () => {
+  it("explicitly confirms a populated uncertain name without changing the heard value or original uncertainty", () => {
+    const draft = extractSpokenOrder("one Head and shoulders anti-denture");
+    expect(draft.unresolved).toContainEqual({ index: 0, field: "name" });
+    expect(() => confirmOrder(draft, true)).toThrow();
+    const confirmed = confirmCurrentDetails(draft);
+    expect(confirmed.unresolved).toEqual([]);
+    expect(confirmOrder(confirmed, true).items[0].name).toBe("Head and shoulders anti-denture");
+    expect(draft.unresolved).toHaveLength(1);
+  });
+  it.each([null, 0, -1, 1.5, 1000])("never confirms or saves a missing/invalid quantity: %s", quantity => {
+    const draft = extractSpokenOrder("Head and shoulders anti-denture");
+    draft.items[0].quantity = quantity;
+    const confirmed = confirmCurrentDetails(draft);
+    expect(confirmed.unresolved).toContainEqual({ index: 0, field: "quantity" });
+    expect(() => confirmOrder(confirmed, true)).toThrow("Quantity is required");
+    expect(() => confirmOrder({ ...confirmed, unresolved: [] }, true)).toThrow("Quantity is required");
+  });
+  it.each(["name", "size", "brand", "variant", "color", "flavour", "type", "platform"] as const)("confirms only a usable populated %s", field => {
+    const target: Correction = field === "platform" ? { field } : { index: 0, field };
+    const draft = correctOrder(extractSpokenOrder("one soap"), target, "maybe value");
+    expect(canConfirmField(draft, target)).toBe(true);
+    expect(confirmCurrentDetails(draft).unresolved).toEqual([]);
+    const empty = correctOrder(draft, target, " ");
+    empty.unresolved = [target];
+    expect(confirmCurrentDetails(empty).unresolved).toEqual([target]);
+    const tooLong = correctOrder(draft, target, "x".repeat(161));
+    tooLong.unresolved = [target];
+    expect(confirmCurrentDetails(tooLong).unresolved).toEqual([target]);
+  });
   it.each(["", "then ", "and then ", "next ", "also ", "Then "])("extracts quantity after a leading speech connector: %s", prefix => {
     const d = extractSpokenOrder(`${prefix}one Nescafe Classic coffee, 200 grams`);
     expect(d.items).toHaveLength(1);

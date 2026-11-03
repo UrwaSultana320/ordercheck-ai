@@ -9,6 +9,79 @@ async function review(page: Page, text: string) {
   await page.getByLabel("Order transcript", { exact: true }).fill(text);
   await page.getByRole("button", { name: "Review order", exact: true }).click();
 }
+
+test("explicit confirmation of heard name saves an order and offers scanning without requesting camera", async ({ page }, testInfo) => {
+  if (testInfo.project.name === "mobile") await page.setViewportSize({ width: 320, height: 700 });
+  await mockSpeech(page);
+  await mockRecording(page, "one Head and shoulders anti-denture");
+  await openVoice(page);
+  await page.getByLabel("Keep orders in this browser tab for this session").check();
+  await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+  await page.getByRole("button", { name: "Start order recording", exact: true }).click();
+  await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+  const save = page.getByRole("button", { name: "Confirm and save voice order", exact: true });
+  await expect(save).toBeDisabled();
+  await expect(page.getByText("Confirm or correct the highlighted details before saving.", { exact: true })).toBeVisible();
+  await expect(save).toHaveAttribute("aria-describedby", "voice-order-save-reason");
+  const confirm = page.getByRole("button", { name: "Confirm current details", exact: true });
+  await confirm.scrollIntoViewIfNeeded();
+  await expect(confirm).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  expect((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze()).violations).toEqual([]);
+  await confirm.click();
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toHaveCount(0);
+  await expect(page.getByText("1 saved orders", { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
+  expect(saved.orders[0].source).toBe("voice");
+  expect(saved.orders[0].items[0]).toMatchObject({ name: "Head and shoulders anti-denture", quantity: 1 });
+  const scan = page.getByRole("button", { name: "Scan this delivery", exact: true });
+  await expect(scan).toBeFocused();
+  await expect(scan).toBeInViewport();
+  await scan.click();
+  await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeVisible();
+  await expect(page.getByText("Your camera is off", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __micRequests: number }).__micRequests)).toBe(1);
+});
+
+test("missing quantity explains disabled save and requires a valid correction before confirming name", async ({ page }, testInfo) => {
+  if (testInfo.project.name === "mobile") await page.setViewportSize({ width: 320, height: 700 });
+  await openVoice(page);
+  await review(page, "Head and shoulders anti-denture");
+  const save = page.getByRole("button", { name: "Confirm and save voice order", exact: true });
+  await expect(save).toBeDisabled();
+  await expect(page.getByText("Quantity is required before this order can be saved.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Confirm current details", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await expect(page.getByLabel("Field to change", { exact: true })).toHaveValue("0:quantity");
+  await page.getByLabel("Correct value", { exact: true }).fill("0");
+  await page.getByRole("button", { name: "Apply correction and review", exact: true }).click();
+  await expect(save).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Confirm current details", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByLabel("Field to change", { exact: true }).selectOption("0:quantity");
+  await page.getByLabel("Correct value", { exact: true }).fill("2");
+  await page.getByRole("button", { name: "Apply correction and review", exact: true }).click();
+  await expect(save).toBeDisabled();
+  await page.getByRole("button", { name: "Confirm current details", exact: true }).click();
+  await expect(save).toBeEnabled();
+});
+
+test("empty Scan offers Create an order and reaches normal Scan after saving without a redirect loop", async ({ page }) => {
+  await page.goto("/");
+  const menu = page.getByRole("button", { name: "Menu", exact: true });
+  if (await menu.isVisible()) await menu.click();
+  await page.getByRole("navigation").getByRole("button", { name: "Scan a delivery", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Save an order before scanning a delivery.", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start camera", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Create an order", exact: true }).click();
+  await review(page, "one soap");
+  await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
+  await page.getByRole("button", { name: "Scan this delivery", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Create an order", exact: true })).toHaveCount(0);
+});
 test("typed transcript requires confirmation, omits missing details, saves logical headings and persists only confirmed data", async ({ page }, testInfo) => {
   await openVoice(page);
   await expect(page.getByRole("button", { name: "Review order", exact: true })).toBeDisabled();

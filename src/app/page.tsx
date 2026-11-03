@@ -34,6 +34,14 @@ export default function Home() {
     heading = useRef<HTMLHeadingElement>(null);
   const a = useAssistant(video, heading);
   const [composing, setComposing] = useState(false);
+  const [voiceSaved, setVoiceSaved] = useState(false);
+  const scanAfterSave = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (voiceSaved && !composing && a.tab === "orders") {
+      const frame = requestAnimationFrame(() => scanAfterSave.current?.focus());
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [voiceSaved, composing, a.tab]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [importing, setImporting] = useState(false),
     [editing, setEditing] = useState<string | null>(null);
@@ -367,11 +375,15 @@ export default function Home() {
                 <button className="primary" disabled={!a.ready} onClick={openVoiceOrder}>Tell OrderCheck what I ordered</button>
               </div>
               {composing && <VoiceOrder
-                save={(order, spoken) => { a.update({ ...a.data, orders: [...a.data.orders, order] }); setComposing(false); a.navigate("orders"); void a.announce("Order saved in My Orders.", 3, spoken); }}
+                save={(order, spoken) => { a.update({ ...a.data, orders: [...a.data.orders, order] }); setComposing(false); setVoiceSaved(true); a.navigate("orders"); void a.announce("Order saved in My Orders. Choose Scan this delivery, then Start camera when ready.", 3, spoken); }}
                 close={() => { setComposing(false); void a.announce("Order cancelled. Nothing saved."); }}
                 announce={a.speakOrder}
                 stopSpeech={() => a.command("stop speaking")}
               />}
+              {voiceSaved && !composing && a.data.orders.length > 0 && <section className="panel" aria-label="Order saved">
+                <h2>Order saved. Ready to scan?</h2>
+                <button ref={scanAfterSave} className="primary" onClick={() => a.navigate("scan")}>Scan this delivery</button>
+              </section>}
               <details><summary>Other ways to add an order</summary><p>Import a purchase receipt or enter product lines manually.</p><button className="secondary" onClick={openImport}>Import an order</button></details>
               {importing && (
                 <section className="panel">
@@ -652,7 +664,10 @@ export default function Home() {
               )}
             </>
           )}
-          {a.tab === "scan" && (
+          {a.tab === "scan" && (!a.ready ? <p role="status">Loading orders…</p> : !a.data.orders.length ? <section className="panel" aria-label="Save an order first">
+            <h2>Save an order before scanning a delivery.</h2>
+            <button className="primary" onClick={openVoiceOrder}>Create an order</button>
+          </section> : (
             <>
               <div className="scan-layout">
                 <section className="panel">
@@ -852,7 +867,7 @@ export default function Home() {
                   ))}
               </section>
             </>
-          )}
+          ))}
           {a.tab === "settings" && (
             <section className="panel help">
               <h2>Choose your guidance</h2>

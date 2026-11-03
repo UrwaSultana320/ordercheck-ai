@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { Order } from "@/lib/engine";
-import { confirmOrder, correctOrder, extractSpokenOrder, fieldValue, orderFields, orderReadback, type Correction, type OrderCandidate } from "@/lib/spoken-order";
+import { canConfirmField, confirmCurrentDetails, hasRequiredQuantity, confirmOrder, correctOrder, extractSpokenOrder, fieldValue, orderFields, orderReadback, type Correction, type OrderCandidate } from "@/lib/spoken-order";
 import { createOrderTranscription, createOrderResponseRecognition, onOrderInterruption, type TranscriptionProvider } from "@/lib/order-transcription";
 
 type Props = { save(order: Order, spoken: boolean): void; close(): void; announce(text: string, spoken?: boolean): Promise<void>; stopSpeech(): void };
@@ -22,6 +22,8 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const spoken = useRef(false), epoch = useRef(0), finished = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusTranscript = useRef(false);
+  const saveReason = candidate && (!hasRequiredQuantity(candidate) ? "Quantity is required before this order can be saved." : candidate.unresolved.length ? "Confirm or correct the highlighted details before saving." : busy ? "Finish or cancel recording before saving." : "");
+  const canConfirm = candidate && candidate.unresolved.length > 0 && candidate.unresolved.every(target => canConfirmField(candidate, target));
   const latest = useRef({ announce, stopSpeech });
   useEffect(() => { latest.current = { announce, stopSpeech }; });
   useEffect(() => {
@@ -148,14 +150,16 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
       </section>
       {candidate.platform && <p>Platform: {candidate.platform}</p>}
       <ol>{candidate.items.map((item, index) => <li key={item.id}><h3>Product {index + 1}: {item.name || "Name needs confirmation"}</h3><dl>{orderFields.filter(field => field !== "name" && fieldValue(item, field)).map(field => <div key={field}><dt>{field}</dt><dd>{fieldValue(item, field)}</dd></div>)}</dl></li>)}</ol>
-      {candidate.unresolved.length > 0 && <p>Needs confirmation: {candidate.unresolved.map(t => `${"index" in t ? `product ${t.index + 1} ` : ""}${t.field}`).join(", ")}.</p>}
+      {candidate.unresolved.length > 0 && <p><strong>Needs confirmation: {candidate.unresolved.map(t => `${"index" in t ? `product ${t.index + 1} ` : ""}${t.field}`).join(", ")}.</strong></p>}
+      <p id="voice-order-save-reason" role="status" aria-atomic="true">{saveReason}</p>
       {editing ? <>
         <label htmlFor="order-correction-field">Field to change</label><select id="order-correction-field" value={targetKey} onChange={e => { void change(candidate, targetFrom(e.target.value)); }}><option value="platform">Platform</option>{candidate.items.flatMap((item, index) => orderFields.map(field => <option key={`${item.id}:${field}`} value={`${index}:${field}`}>Product {index + 1}: {field}</option>))}</select>
         <label>Correct value<input maxLength={160} value={answer} onChange={e => setAnswer(e.target.value)} /></label>
         <p>Leave an optional value blank to omit it. A quantity must be a whole number from 1 to 999.</p>
         <div className="button-row"><button className="primary" disabled={busy} onClick={() => { const updated = correctOrder(candidate, targetFrom(targetKey), answer); void review(updated); }}>Apply correction and review</button><button className="secondary" disabled={!consent || busy} onClick={() => { void change(candidate, targetFrom(targetKey), true); }}>Speak this correction</button></div>
       </> : <div className="button-row">
-        <button className="primary" disabled={!!candidate.unresolved.length || busy} onClick={() => persist(candidate)}>Confirm and save voice order</button>
+        {canConfirm && <button className="primary" disabled={busy} onClick={() => { cancelListening(); setError(""); const updated = confirmCurrentDetails(candidate); setCandidate(updated); setStatus("Current displayed details confirmed. Review and choose Confirm and save voice order to save."); }}>Confirm current details</button>}
+        <button className="primary" aria-describedby={saveReason ? "voice-order-save-reason" : undefined} disabled={!!saveReason} onClick={() => persist(candidate)}>Confirm and save voice order</button>
         <button className="secondary" onClick={() => { void change(candidate, candidate.unresolved[0] ?? { index: 0, field: "name" }); }}>Change</button>
         <button className="secondary" disabled={busy} onClick={() => { spoken.current = true; void review(candidate); }}>Read back order</button>
         <button className="secondary" disabled={!consent || busy} onClick={() => listen("command", candidate)}>Speak response</button>
