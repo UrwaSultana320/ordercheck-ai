@@ -671,6 +671,7 @@ export default function Home() {
                       muted
                       playsInline
                       aria-label="Live rear camera preview"
+                      aria-describedby="camera-guidance"
                     />
                     {!a.camera && (
                       <div className="camera-placeholder">
@@ -679,6 +680,7 @@ export default function Home() {
                       </div>
                     )}
                   </div>
+                  <p id="camera-guidance">{a.cameraGuidance}</p>
                   <div className="button-row">
                     <button
                       className="primary"
@@ -698,7 +700,7 @@ export default function Home() {
                     </button>
                   </div>
                   <p>
-                    Automatic OCR reads stable snapshots, one at a time.{" "}
+                    Automatic OCR reads well-lit, steady, detailed snapshots, one at a time. Guidance estimates image quality, not product location or distance. You can always choose Read label with OCR.{" "}
                     {a.ocrTime !== null &&
                       `Last OCR job: ${a.ocrTime} ms on this device.`}{" "}
                     Unknown codes require a readable label. The catalog contains

@@ -13,6 +13,7 @@ import {
   type Attempt,
 } from "./engine";
 import { OcrReader } from "./media";
+import { analyzeFrame, CameraGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
 import { orderStorage } from "./order-storage";
 import { newId } from "./id";
 import { VoiceController, browserVoiceHost } from "./voice";
@@ -65,6 +66,7 @@ export function useAssistant(
   const [pending, setPending] = useState<Pending | null>(null),
     pendingRef = useRef<Pending | null>(null);
   const retryId = useRef<string | undefined>(undefined);
+  const [cameraGuidance, setCameraGuidance] = useState("");
   const [ocrTime, setOcrTime] = useState<number | null>(null);
   const voice = useRef<VoiceController | null>(null),
     stream = useRef<MediaStream | null>(null);
@@ -83,7 +85,7 @@ export function useAssistant(
     command(c: Command): void;
     stop(): void;
     check(e: Evidence): void;
-    ocr(): Promise<void>;
+    ocr(automatic?: boolean): Promise<void>;
   } | null>(null);
   function phaseTo(next: SessionState) {
     phaseRef.current = next;
@@ -118,6 +120,7 @@ export function useAssistant(
     reader.current = null;
     ocrBusy.current = false;
     setCamera(false);
+    setCameraGuidance("");
   }
   function stop() {
     releaseCamera();
@@ -352,31 +355,66 @@ export function useAssistant(
       reader.current = new OcrReader();
       setCamera(true);
       phaseTo("scanning");
+      setCameraGuidance("Camera started. Hold one label in view.");
+      const analysis = document.createElement("canvas");
+      analysis.width = 96;
+      analysis.height = 72;
+      const ctx = analysis.getContext("2d", { willReadFrequently: true });
+      const tiny = document.createElement("canvas");
+      tiny.width = tiny.height = 16;
+      const tinyContext = tiny.getContext("2d", { willReadFrequently: true });
+      const guidance = new CameraGuidance();
+      const announcements = new GuidanceAnnouncements();
+      let previous: Float32Array | undefined;
+      let presentation = gate.current.epoch;
+      let analysisFailed = false;
+      let guidanceSpeaking = false;
       timer.current = setInterval(() => {
         const v = video.current;
-        if (
-          !v?.videoWidth ||
-          epoch !== generation.current ||
-          document.visibilityState !== "visible"
-        )
-          return;
-        const tiny = document.createElement("canvas");
-        tiny.width = tiny.height = 16;
-        const ctx = tiny.getContext("2d", { willReadFrequently: true });
-        if (!ctx) return;
-        ctx.drawImage(v, 0, 0, 16, 16);
-        const rgba = ctx.getImageData(0, 0, 16, 16).data;
-        const pixels = Array.from(
-          { length: 256 },
-          (_, i) => (rgba[i * 4] + rgba[i * 4 + 1] + rgba[i * 4 + 2]) / 3,
-        );
-        if (
-          gate.current.sample(pixels) &&
-          !ocrBusy.current &&
-          ["scanning", "awaiting-next-item"].includes(phaseRef.current) &&
-          gate.current.accept("ocr-frame")
-        )
-          void actions.current?.ocr();
+        if (!v?.videoWidth || epoch !== generation.current ||
+          document.visibilityState !== "visible") return;
+        const scanning = !ocrBusy.current &&
+          ["scanning", "awaiting-next-item"].includes(phaseRef.current);
+        if (!scanning) guidance.reset();
+        if (analysisFailed) return;
+        try {
+          if (!ctx || !tinyContext) throw new Error("Canvas unavailable");
+          ctx.drawImage(v, 0, 0, 96, 72);
+          const frame = analyzeFrame(ctx.getImageData(0, 0, 96, 72).data, 96, 72, previous);
+          previous = frame.luminance;
+          // Preserve the existing presentation/duplicate boundary independently.
+          tinyContext.drawImage(v, 0, 0, 16, 16);
+          const rgba = tinyContext.getImageData(0, 0, 16, 16).data;
+          const pixels = Array.from({ length: 256 }, (_, i) =>
+            (rgba[i * 4] + rgba[i * 4 + 1] + rgba[i * 4 + 2]) / 3);
+          const stable = gate.current.sample(pixels);
+          if (presentation !== gate.current.epoch) {
+            presentation = gate.current.epoch;
+            guidance.reset();
+          }
+          if (!scanning) return;
+          const quality = guidance.sample(frame.metrics);
+          if (quality.ready && stable) {
+            if (gate.current.accept("ocr-frame")) void actions.current?.ocr(true);
+          } else {
+            const instruction = !guidanceSpeaking && announcements.next(
+              quality.ready ? GUIDANCE.moving : quality.message,
+              performance.now(),
+            );
+            if (instruction) {
+              setCameraGuidance(instruction);
+              guidanceSpeaking = true;
+              void announce(instruction, 0).finally(() => { guidanceSpeaking = false; });
+            }
+          }
+        } catch {
+          analysisFailed = true;
+          guidance.reset();
+          if (scanning) {
+            setCameraGuidance(GUIDANCE.unavailable);
+            void announce(GUIDANCE.unavailable, 0);
+          }
+        }
       }, 700);
     } catch (error) {
       if (epoch === generation.current) {
@@ -389,7 +427,7 @@ export function useAssistant(
       }
     }
   }
-  async function ocr() {
+  async function ocr(automatic = false) {
     if (!["scanning", "awaiting-next-item"].includes(phaseRef.current)) return;
     const v = video.current;
     if (!v?.videoWidth || !reader.current || !stream.current || ocrBusy.current)
@@ -411,8 +449,12 @@ export function useAssistant(
     }
     ocrBusy.current = true;
     phaseTo("processing");
-    void announce("Reading a stable label. Stop remains available.", 0);
+    if (automatic) setCameraGuidance(GUIDANCE.ready);
     try {
+      if (automatic) {
+        await announce(GUIDANCE.ready, 1);
+        if (epoch !== generation.current || !mounted.current) return;
+      } else void announce("Reading a stable label. Stop remains available.", 0);
       const observed = await reader.current.read(canvas);
       if (epoch !== generation.current || !mounted.current) return;
       setOcrTime(observed.elapsedMs);
@@ -711,6 +753,7 @@ export function useAssistant(
     }
   }
   return {
+    cameraGuidance,
     tab,
     navigate,
     data,
