@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeFrame, AutomaticOcrViews, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE, type FrameMetrics } from "../src/lib/camera-guidance";
+import { analyzeFrame, BoundedAutomaticRead, AutomaticOcrViews, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE, type FrameMetrics } from "../src/lib/camera-guidance";
 import { PresentationGate } from "../src/lib/session";
 
 const good: FrameMetrics = { brightness: 120, motion: 1, changedFraction: 0.01, edgeDensity: 0.12, centralEdgeDensity: 0.25, borderEdgeDensity: 0, borderShare: 0, sharpness: 400, centerShare: 0.4, centroidX: 0.5, centroidY: 0.5 };
@@ -166,4 +166,25 @@ it("retains broad framing evidence in a smooth defocused synthetic frame", () =>
   expect(metrics.sharpness).toBeLessThan(55);
   expect(metrics.broadBorderDensity).toBeGreaterThan(0.28);
   expect(frameGuidance(metrics)).toBe(GUIDANCE.clipped);
+});
+
+
+describe("bounded automatic reading", () => {
+  it("attempts a bright stable imperfect view after six seconds", () => {
+    const read = new BoundedAutomaticRead();
+    const imperfect = { ...good, sharpness: 20 };
+    expect(frameGuidance(imperfect)).toBe(GUIDANCE.blur);
+    expect(read.sample(imperfect, 0)).toBe(false);
+    expect(read.sample(imperfect, 5900)).toBe(false);
+    expect(read.sample(imperfect, 6000)).toBe(true);
+  });
+  it.each([{ brightness: 10 }, { motion: 12 }, { changedFraction: .3 }])("restarts the bound after unusable samples %s", problem => {
+    const read = new BoundedAutomaticRead();
+    read.sample(good, 0);
+    expect(read.sample({ ...good, ...problem }, 5900)).toBe(false);
+    expect(read.sample(good, 6000)).toBe(false);
+    expect(read.sample(good, 12000)).toBe(true);
+    read.reset();
+    expect(read.sample(good, 15000)).toBe(false);
+  });
 });

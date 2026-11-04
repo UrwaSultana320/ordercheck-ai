@@ -9,6 +9,9 @@ const provenanceSchema = z.object({
   unitPrice: z.number().nonnegative().optional(),
   lineTotal: z.number().nonnegative().optional(),
 });
+export function isKnownBarcode(barcode: string): boolean {
+  return catalog.products.some(product => product.barcodes.includes(barcode));
+}
 export const itemSchema = z
   .object({
     id: z.string().min(1),

@@ -14,6 +14,7 @@ async function installCamera(page: Page, speech = true, quantity = 1) {
       __cameraStops: number; __cameraRequests: number; __cameraPattern: boolean;
       __plain: boolean; __rotated: boolean; __ocrReads: number; __ocrError: boolean;
       __legacyJitter: boolean; __legacySamples: number;
+      __barcodePoints?: [number, number][]; __ocrText?: string; __ocrDelay?: number;
       __speeches: { text: string; at: number }[];
     };
     host.__plain = host.__rotated = host.__ocrError = false;
@@ -47,8 +48,8 @@ async function installCamera(page: Page, speech = true, quantity = 1) {
         if (packet.action === "recognize") host.__ocrReads++;
         setTimeout(() => this.onmessage?.({ data: { ...packet,
           status: packet.action === "recognize" && host.__ocrError ? "reject" : "resolve",
-          data: packet.action === "recognize" && host.__ocrError ? "Synthetic OCR failure" : { text: "", confidence: 0 },
-        } }), 100);
+          data: packet.action === "recognize" && host.__ocrError ? "Synthetic OCR failure" : { text: host.__ocrText ?? "", confidence: host.__ocrText ? 95 : 0 },
+        } }), packet.action === "recognize" ? host.__ocrDelay ?? 100 : 100);
       }
       terminate() {}
     }
@@ -71,8 +72,17 @@ async function installCamera(page: Page, speech = true, quantity = 1) {
           }
         }
       };
-      paint();
-      const timer = setInterval(paint, 100);
+      const originalPaint = paint;
+      const paintWithBarcode = () => {
+        originalPaint();
+        if (host.__barcodePoints) {
+          ctx.fillStyle = "white"; ctx.fillRect(0, 0, 320, 240);
+          ctx.fillStyle = "black";
+          for (const [x, y] of host.__barcodePoints) ctx.fillRect(x + 60, y + 20, 1, 1);
+        }
+      };
+      paintWithBarcode();
+      const timer = setInterval(paintWithBarcode, 100);
       const stream = canvas.captureStream(10);
       for (const track of stream.getTracks()) {
         const stop = track.stop.bind(track);
@@ -139,7 +149,7 @@ test("visual transitions bypass speech throttling; failed OCR retries only a new
   expect(transition.now - darkAt).toBeLessThan(5000);
   expect(transition.speeches.some(s => s.text === "Hold the product steady while the camera focuses.")).toBe(false);
   await page.evaluate(() => { (window as unknown as { __cameraPattern: boolean }).__cameraPattern = true; });
-  await expect(page.locator("#camera-guidance")).toHaveText("I could not read the label. Slowly rotate the product and hold it steady.", { timeout: 15000 });
+  await expect(page.locator("#camera-guidance")).toHaveText("I could not read this side. Slowly rotate the product.", { timeout: 15000 });
   const reads = () => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads);
   expect(await reads()).toBe(1);
   expect(await page.evaluate(() => (window as unknown as { __legacySamples: number }).__legacySamples)).toBeGreaterThan(3);
@@ -148,13 +158,13 @@ test("visual transitions bypass speech throttling; failed OCR retries only a new
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeEnabled();
   await page.evaluate(() => { (window as unknown as { __rotated: boolean }).__rotated = true; });
   await expect.poll(reads, { timeout: 15000 }).toBe(2);
-  await expect(page.locator("#camera-guidance")).toContainText("I could not read the label.");
+  await expect(page.locator("#camera-guidance")).toContainText("I could not read this side.");
   await page.waitForTimeout(3000);
   expect(await reads()).toBe(2);
   await page.evaluate(() => { (window as unknown as { __ocrError: boolean }).__ocrError = true; });
   await page.getByRole("button", { name: "Read label with OCR", exact: true }).click();
   await expect.poll(reads).toBe(3);
-  await expect(page.locator("#camera-guidance")).toContainText("I could not read the label.");
+  await expect(page.locator("#camera-guidance")).toContainText("I could not read this side.");
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeEnabled();
   expect(await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Good position. Reading the label."))).toBe(true);
   await page.getByRole("button", { name: "Stop camera", exact: true }).click();
@@ -204,4 +214,45 @@ test("stable high-quality snapshot barcode uses real ZXing, skips OCR and dedupl
   expect(saved.orders[0].items[0].verified).toBe(1);
   expect(saved.attempts).toHaveLength(1);
   await page.getByRole("button", { name: "Stop camera", exact: true }).click();
+});
+
+
+test("unknown live barcode automatically reads label on the same presentation before finalizing", async ({ page }) => {
+  await installCamera(page, true, 2);
+  const matrix = new QRCodeWriter().encode("UNKNOWN-REAL-PACKAGE", BarcodeFormat.QR_CODE, 200, 200, new Map());
+  const points: [number, number][] = [];
+  for (let y = 0; y < 200; y++) for (let x = 0; x < 200; x++) if (matrix.get(x, y)) points.push([x, y]);
+  await page.goto("/");
+  await page.evaluate(points => {
+    const host = window as unknown as { __barcodePoints: [number, number][]; __ocrText: string; __ocrDelay: number };
+    host.__barcodePoints = points;
+    host.__ocrText = "Everyday Oat drink Original 1 L";
+    host.__ocrDelay = 1500;
+  }, points);
+  await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads), { timeout: 20000 }).toBe(1);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts)).toHaveLength(0);
+  await expect(page.locator("#camera-guidance")).toHaveText("Reading label.");
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts.length)).toBe(1);
+  const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
+  expect(saved.attempts[0].observation).toMatchObject({ barcode: "UNKNOWN-REAL-PACKAGE", source: "ocr", text: "Everyday Oat drink Original 1 L" });
+  expect(saved.attempts[0].status).toBe("MATCH");
+  expect(saved.orders[0].items[0].verified).toBe(1);
+  await expect(page.locator("#camera-guidance")).not.toBeEmpty();
+  await page.waitForTimeout(3500);
+  expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text.includes("barcode alone")))).toBe(true);
+});
+
+test("bounded imperfect view attempts once then keeps rotation status until the view changes", async ({ page }) => {
+  await installCamera(page);
+  await page.goto("/");
+  await page.evaluate(() => { (window as unknown as { __plain: boolean }).__plain = true; });
+  await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
+  await expect(page.locator("#camera-guidance")).not.toBeEmpty();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads), { timeout: 18000 }).toBe(1);
+  await expect(page.locator("#camera-guidance")).toHaveText("I could not read this side. Slowly rotate the product.");
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts)).toHaveLength(0);
+  await page.waitForTimeout(7000);
+  expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(1);
 });

@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   verify,
+  isKnownBarcode,
   recordAttempt,
   undoAttempt,
   progress,
@@ -13,7 +14,7 @@ import {
   type Attempt,
 } from "./engine";
 import { deliveryCameraConstraints, focusCamera, OcrReader } from "./media";
-import { analyzeFrame, AutomaticOcrViews, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
+import { analyzeFrame, BoundedAutomaticRead, AutomaticOcrViews, CameraGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
 import { orderStorage } from "./order-storage";
 import { newId } from "./id";
 import { VoiceController, browserVoiceHost } from "./voice";
@@ -82,7 +83,6 @@ export function useAssistant(
     mounted = useRef(false);
   const gate = useRef(new PresentationGate());
   const ocrViews = useRef(new AutomaticOcrViews());
-  const latestView = useRef<Float32Array | undefined>(undefined);
   const ocrRecovery = useRef(false);
   const actions = useRef<{
     command(c: Command): void;
@@ -125,7 +125,6 @@ export function useAssistant(
     setCamera(false);
     setCameraGuidance("");
     ocrViews.current = new AutomaticOcrViews();
-    latestView.current = undefined;
     ocrRecovery.current = false;
   }
   function stop() {
@@ -316,6 +315,7 @@ export function useAssistant(
     sessionId.current = newId();
     gate.current = new PresentationGate();
     phaseTo("requesting-permission");
+    setCameraGuidance("Camera starting. Looking for a barcode or readable label.");
     try {
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
         throw new Error(
@@ -347,7 +347,20 @@ export function useAssistant(
           )
             return;
           const code = found.getText();
+          if (!isKnownBarcode(code)) {
+            if (!ocrViews.current.canAttempt() || !gate.current.accept(`unknown:${code}`)) return;
+            phaseTo("processing");
+            const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
+            setCameraGuidance(instruction);
+            void announce(instruction, 1, true).then(() => {
+              if (epoch !== generation.current || !mounted.current) return;
+              phaseTo("scanning");
+              void actions.current?.ocr(true);
+            });
+            return;
+          }
           if (gate.current.accept(`barcode:${code}`)) {
+            setCameraGuidance("Barcode detected. Checking this product.");
             void announce("Barcode detected. Checking this product.", 1, true).then(() => {
               if (epoch !== generation.current || !mounted.current) return;
               actions.current?.check({
@@ -380,6 +393,7 @@ export function useAssistant(
       tiny.width = tiny.height = 16;
       const tinyContext = tiny.getContext("2d", { willReadFrequently: true });
       const guidance = new CameraGuidance();
+      const boundedRead = new BoundedAutomaticRead();
       const announcements = new GuidanceAnnouncements();
       let previous: Float32Array | undefined;
       let analysisFailed = false;
@@ -391,14 +405,13 @@ export function useAssistant(
           document.visibilityState !== "visible") return;
         const scanning = !ocrBusy.current &&
           ["scanning", "awaiting-next-item"].includes(phaseRef.current);
-        if (!scanning) guidance.reset();
+        if (!scanning) { guidance.reset(); boundedRead.reset(); }
         if (analysisFailed) return;
         try {
           if (!ctx || !tinyContext) throw new Error("Canvas unavailable");
           ctx.drawImage(v, 0, 0, 96, 72);
           const frame = analyzeFrame(ctx.getImageData(0, 0, 96, 72).data, 96, 72, previous);
           previous = frame.luminance;
-          latestView.current = frame.luminance;
           // Preserve the existing presentation/duplicate boundary independently.
           tinyContext.drawImage(v, 0, 0, 16, 16);
           const rgba = tinyContext.getImageData(0, 0, 16, 16).data;
@@ -408,14 +421,14 @@ export function useAssistant(
           if (!scanning) return;
           ocrViews.current.observe(frame.luminance);
           const quality = guidance.sample(frame.metrics);
-          if (quality.ready && ocrViews.current.canAttempt()) {
+          const fallback = boundedRead.sample(frame.metrics, performance.now());
+          if ((quality.ready || fallback) && ocrViews.current.canAttempt()) {
             void actions.current?.ocr(true);
           } else {
             // Recovery stays visible on the unreadable view until repositioned;
             // otherwise visuals follow state immediately, independently of speech.
-            const message = ocrRecovery.current && !ocrViews.current.canAttempt() &&
-              frameGuidance(frame.metrics) === null
-              ? GUIDANCE.unreadable : quality.ready ? GUIDANCE.moving : quality.message;
+            const message = ocrRecovery.current && !ocrViews.current.canAttempt()
+              ? GUIDANCE.unreadable : quality.ready ? "Looking for a barcode or readable label. Present a different view or product." : quality.message;
             setCameraGuidance(message);
             const instruction = !guidanceSpeaking && announcements.next(
               message,
@@ -458,6 +471,11 @@ export function useAssistant(
     canvas.width = Math.round(v.videoWidth * scale);
     canvas.height = Math.round(v.videoHeight * scale);
     canvas.getContext("2d")!.drawImage(v, 0, 0, canvas.width, canvas.height);
+    // Compare video samples through the same scaling path. Downsampling the
+    // saved canvas can differ from video sampling even when nothing moved.
+    const before = document.createElement("canvas");
+    before.width = before.height = 16;
+    before.getContext("2d")!.drawImage(v, 0, 0, 16, 16);
     const presentationId = `${sessionId.current}:${gate.current.epoch}`;
     let snapshotBarcode: string | undefined;
     try {
@@ -468,18 +486,32 @@ export function useAssistant(
       /* This frame need not contain a readable barcode. */
     }
     ocrBusy.current = true;
-    if (latestView.current) ocrViews.current.mark(latestView.current);
+    // Live barcode detection can beat the first 700 ms analysis tick. Always
+    // mark the captured view so that early unknown codes cannot start a loop.
+    const capturedView = document.createElement("canvas");
+    capturedView.width = 96; capturedView.height = 72;
+    const viewContext = capturedView.getContext("2d")!;
+    viewContext.drawImage(v, 0, 0, 96, 72);
+    ocrViews.current.mark(analyzeFrame(viewContext.getImageData(0, 0, 96, 72).data, 96, 72).luminance);
     ocrRecovery.current = false;
     phaseTo("processing");
     if (automatic) setCameraGuidance(GUIDANCE.ready);
     try {
-      if (snapshotBarcode) {
+      if (snapshotBarcode && isKnownBarcode(snapshotBarcode)) {
+        setCameraGuidance("Barcode detected. Checking this product.");
         if (!gate.current.accept(`barcode:${snapshotBarcode}`)) { phaseTo("awaiting-next-item"); return; }
         await announce("Barcode detected. Checking this product.", 1, true);
         if (epoch !== generation.current || !mounted.current) return;
         check({ barcode: snapshotBarcode, source: "barcode", captureId: newId(), sessionId: sessionId.current, presentationId });
         return;
       }
+      if (snapshotBarcode) {
+        const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
+        setCameraGuidance(instruction);
+        await announce(instruction, 1, true);
+        if (epoch !== generation.current || !mounted.current) return;
+      }
+      setCameraGuidance("Reading label.");
       if (automatic) {
         await announce(GUIDANCE.ready, 1, true);
         if (epoch !== generation.current || !mounted.current) return;
@@ -487,22 +519,21 @@ export function useAssistant(
       const observed = await reader.current.read(canvas);
       if (epoch !== generation.current || !mounted.current) return;
       setOcrTime(observed.elapsedMs);
-      if (!snapshotBarcode && (observed.confidence < 35 || !/[\p{L}\p{N}]{3}/u.test(observed.text))) {
+      if (observed.confidence < 35 || !/[\p{L}\p{N}]{3}/u.test(observed.text)) {
         phaseTo("scanning");
         ocrRecovery.current = true;
         setCameraGuidance(GUIDANCE.unreadable);
         void announce(GUIDANCE.unreadable, 1, true);
         return;
       }
-      const before = document.createElement("canvas"),
-        after = document.createElement("canvas");
-      before.width = before.height = after.width = after.height = 16;
-      before.getContext("2d")!.drawImage(canvas, 0, 0, 16, 16);
+      const after = document.createElement("canvas");
+      after.width = after.height = 16;
       after.getContext("2d")!.drawImage(v, 0, 0, 16, 16);
       const a = before.getContext("2d")!.getImageData(0, 0, 16, 16).data,
         b = after.getContext("2d")!.getImageData(0, 0, 16, 16).data;
       if (a.reduce((n, x, i) => n + Math.abs(x - b[i]), 0) / a.length > 16) {
         phaseTo("scanning");
+        setCameraGuidance("Package moved while reading. Hold one label steady and retry.");
         void announce(
           "Package moved while reading. Hold one label steady and retry.",
           1,
@@ -581,6 +612,7 @@ export function useAssistant(
       verdict.itemId = old.itemId;
     }
     setResult(verdict);
+    setCameraGuidance(verdict.status === "MATCH" ? "Match" : verdict.status === "MISMATCH" ? "Mismatch" : "Unable to verify");
     // Revise catalog-only evidence only from barcode+OCR read from one snapshot
     // in the same observed presentation, never from unrelated captures.
     if (

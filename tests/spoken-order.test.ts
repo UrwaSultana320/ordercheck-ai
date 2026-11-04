@@ -327,3 +327,22 @@ it("short response timeout and browser no-speech release recognition without a p
   expect(events.complete).toHaveBeenCalledTimes(2);
   expect(events.error).not.toHaveBeenCalled();
 });
+
+
+describe("platform phrases anywhere in spoken orders", () => {
+  it.each([
+    ["I ordered from Amazon two shampoos 400ml each.", "Amazon", ["shampoos"]],
+    ["I ordered two shampoos 400ml each from Daraz.", "Daraz", ["shampoos"]],
+    ["I bought three soaps from Amazon.", "Amazon", ["soaps"]],
+    ["I ordered two shampoos from Daraz then three soaps.", "Daraz", ["shampoos", "soaps"]],
+    ["I ordered two shampoos from Daraz then I ordered three soaps.", "Daraz", ["shampoos", "soaps"]],
+    ["I ordered two shampoos from Daraz, then three soaps.", "Daraz", ["shampoos", "soaps"]],
+    ["I ordered two shampoos, from Walmart three soaps.", "Walmart", ["shampoos", "soaps"]],
+    ["I ordered two Navier Deep Espresso detergent sprays 150ml each from Dharaj. Then I ordered three Dettol Original Soaps 30g each.", "Dharaj", ["Navier Deep Espresso detergent sprays", "Dettol Original Soaps"]],
+  ])("extracts literal platform from %s", (text, platform, names) => {
+    const candidate = extractSpokenOrder(text as string);
+    expect(candidate.platform).toBe(platform);
+    expect(candidate.items.map(i => i.name)).toEqual(names);
+    expect(candidate.items.every(i => !i.name.includes("from"))).toBe(true);
+  });
+});

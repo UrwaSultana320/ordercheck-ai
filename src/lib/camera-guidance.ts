@@ -5,7 +5,7 @@ export const GUIDANCE = {
   moving: "Hold still.",
   detail: "Move the product closer.",
   clipped: "Move the product slightly farther away.",
-  unreadable: "I could not read the label. Slowly rotate the product and hold it steady.",
+  unreadable: "I could not read this side. Slowly rotate the product.",
   blur: "Hold the product steady while the camera focuses.",
   left: "Move the product slightly left.",
   right: "Move the product slightly right.",
@@ -147,6 +147,20 @@ export class CameraGuidance {
     return { ready: this.good >= 3, message: problem ?? (this.good >= 3 ? GUIDANCE.ready : GUIDANCE.moving) };
   }
   reset() { this.good = 0; this.distance = this.candidate = ""; this.samples = 0; }
+}
+// Relax framing after six seconds of usable samples, while still requiring
+// reasonable light and stability. The view gate owns retry/duplicate limits.
+export class BoundedAutomaticRead {
+  private since: number | null = null;
+  sample(m: FrameMetrics, now: number) {
+    if (m.brightness < 40 || m.motion === null || m.motion > 7 || m.changedFraction > 0.12) {
+      this.since = null;
+      return false;
+    }
+    this.since ??= now;
+    return now - this.since >= 6000;
+  }
+  reset() { this.since = null; }
 }
 // One automatic attempt per view, independent of PresentationGate's old
 // stability threshold. Compare against the attempted view, not adjacent frames,

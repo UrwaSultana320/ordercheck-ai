@@ -216,7 +216,7 @@ test("failed review focuses an inline alert and an edited speech-style transcrip
   await review(page, "I ordered from Daraz I ordered two Dove Hair Fall Rescue shampoos 400 millilitres and one Nescafe Classic coffee 200 grams");
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused();
   await expect(page.getByText("Platform: Daraz", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Product 2: Nescafe Classic coffee", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Product 2", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
   await expect(page.getByText("1 saved orders", { exact: true })).toBeVisible();
 });
@@ -234,8 +234,8 @@ for (const ending of ["Finish recording", "recorder end", "maximum duration"] as
     else if (ending === "recorder end") await page.evaluate(() => (window as unknown as { __orderRecorder: { stop(): void } }).__orderRecorder.stop());
     else await page.clock.fastForward(60001);
     await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused({ timeout: 10000 });
-    await expect(page.getByRole("heading", { name: "Product 1: Dove shampoos", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Product 2: Nescafe coffee", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Product 1", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Product 2", exact: true })).toBeVisible();
     await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as unknown as { __spokenEnded: string[] }).__spokenEnded.some(s => s.includes("I heard:")))).toBe(true);
     expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
@@ -495,13 +495,14 @@ test("voice readback finishes before one automatic response window; timeout pres
   expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
   await page.evaluate(() => (window as unknown as { __finishReadback: () => void }).__finishReadback());
   await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+  await expect(page.locator("#voice-order-save-reason")).toHaveText("Listening for your response. Say Confirm, Change, or Start again.");
   const result = await page.evaluate(() => ({ starts: (window as unknown as { __responseStarts: number }).__responseStarts, readback: (window as unknown as { __spokenEnded: string[] }).__spokenEnded }));
   expect(result.starts).toBe(1);
   expect(result.readback.some(text => text.includes("Say Confirm to save this order, Change to correct it, or Start again."))).toBe(true);
   await page.clock.fastForward(15001);
   await expect(page.getByText("No response heard. Use Speak response or the buttons to continue.", { exact: true })).toBeVisible();
   await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Product 1: soap", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Product 1", exact: true })).toBeVisible();
   await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
   await page.clock.fastForward(20000);
   expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
@@ -532,6 +533,36 @@ for (const interruption of ["Escape", "revoke consent"] as const) {
     await page.evaluate(() => (window as unknown as { __finishReadback: () => void }).__finishReadback());
     await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
-    await expect(page.getByRole("heading", { name: "Product 1: soap", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Product 1", exact: true })).toBeVisible();
   });
 }
+
+
+test("compact voice review wraps long names and literal platform at phone widths", async ({ page }, testInfo) => {
+  await mockSpeech(page);
+  await openVoice(page);
+  const text = "I ordered two Navier Deep Espresso detergent sprays 150ml each from Dharaj. Then I ordered three Dettol Original Soaps 30g each.";
+  await review(page, text);
+  for (const width of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect(page.locator(".voice-order-platform")).toHaveText("Platform: Dharaj");
+    await expect(page.locator(".voice-order-name").first()).toHaveText("Navier Deep Espresso detergent sprays");
+    await expect(page.locator(".voice-order-details dd").first()).toHaveText("2");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    for (const card of await page.locator(".voice-order-product").all()) {
+      const box = await card.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    }
+    expect(await page.locator(".voice-order-details dd").first().evaluate(el => getComputedStyle(el).marginLeft)).toBe("0px");
+    if (width === 320) await page.screenshot({ path: testInfo.outputPath("compact-review-320.png"), fullPage: true });
+    const save = page.getByRole("button", { name: "Confirm and save voice order", exact: true });
+    await save.scrollIntoViewIfNeeded();
+    await expect(save).toBeInViewport();
+  }
+  await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+  await page.getByRole("button", { name: "Speak response", exact: true }).click();
+  await expect(page.locator("#voice-order-save-reason")).toHaveText("Listening for your response. Say Confirm, Change, or Start again.");
+  await expect(page.getByRole("button", { name: "Confirm and save voice order", exact: true })).toBeDisabled();
+  await expect(page.getByText("Finish or cancel recording before saving.", { exact: true })).toHaveCount(0);
+});

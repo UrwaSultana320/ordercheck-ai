@@ -41,6 +41,19 @@ export function extractSpokenOrder(transcript: string): OrderCandidate {
     if (uncertain.test(name)) candidate.unresolved.push({ field: "platform" });
     text = text.slice(platform[0].length - tail.length + name.length);
   }
+  // Explicit "from" phrases may appear anywhere in an order clause. Preserve
+  // the spoken retailer verbatim; stop at punctuation or the next order/item.
+  text = text.replace(/\bfrom\s+([^.!?,;\n]+)/gi, (_phrase, tail: string) => {
+    const clause = tail.search(/\s+(?:(?:and|then|next|also)\s+)*(?:I\s+)?(?:ordered|bought|purchased)\b/i);
+    const quantity = tail.search(new RegExp("\\s+(?:(?:and|then|next|also)\\s+)*" + quantityStart, "i"));
+    const boundary = clause >= 0 ? clause : quantity >= 0 ? quantity : tail.length;
+    const name = clean(tail.slice(0, boundary));
+    if (!name) return _phrase;
+    if (candidate.platform && candidate.platform !== name) candidate.unresolved.push({ field: "platform" });
+    else candidate.platform = name;
+    if (uncertain.test(name)) candidate.unresolved.push({ field: "platform" });
+    return boundary < tail.length ? `;${tail.slice(boundary)}` : "";
+  });
   text = clean(text).replace(/^(?:(?:and|then)\s+)?(?:I\s+)?(?:ordered|bought|purchased)\b\s*/i, "");
   text = text.replace(/\b(?:I\s+)?(?:ordered|bought|purchased)\s+/gi, "");
   // Split only at a stated new quantity or an explicit new sentence/line.
@@ -69,7 +82,7 @@ export function extractSpokenOrder(transcript: string): OrderCandidate {
       const near = rest.slice(Math.max(0, size.index! - 25), size.index! + size[0].length + 15);
       const multipleSizes = new RegExp(sizePattern.source, "gi");
       if (uncertain.test(near) || [...rest.matchAll(multipleSizes)].length > 1) candidate.unresolved.push({ index, field: "size" });
-      rest = rest.slice(0, size.index).replace(/\bsize\s*(?::|is)?\s*$/i, "") + rest.slice(size.index! + size[0].length);
+      rest = rest.slice(0, size.index).replace(/\bsize\s*(?::|is)?\s*$/i, "") + rest.slice(size.index! + size[0].length).replace(/^\s*each\b/i, "");
     }
     // Explicit labels let any product category supply its own attribute vocabulary.
     rest = rest.replace(/\b(color|colour|flavou?r|type|variant|formulation|brand|size|shade)\s*(?::|is\b)?\s+([^,;]+)/gi, (_all, key: string, value: string) => {

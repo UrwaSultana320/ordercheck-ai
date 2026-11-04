@@ -12,6 +12,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const [candidate, setCandidate] = useState<OrderCandidate | null>(null);
   const [status, setStatus] = useState("Ready. Type your order or allow the microphone and begin.");
   const [phase, setPhase] = useState<"idle" | "requesting" | "recording" | "transcribing">("idle");
+  const [listeningMode, setListeningMode] = useState<"order" | "command" | "correction">("order");
   const listening = phase === "recording", busy = phase !== "idle";
   const [consent, setConsent] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -22,7 +23,14 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const spoken = useRef(false), epoch = useRef(0), finished = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusTranscript = useRef(false);
-  const saveReason = candidate && (!hasRequiredQuantity(candidate) ? "Quantity is required before this order can be saved." : candidate.unresolved.length ? "Confirm or correct the highlighted details before saving." : busy ? "Finish or cancel recording before saving." : "");
+  const listeningReason = listeningMode === "command"
+    ? "Listening for your response. Say Confirm, Change, or Start again."
+    : listeningMode === "correction"
+      ? "Listening for your correction. Finish or cancel this response before saving."
+      : "Finish or cancel recording before saving.";
+  const saveReason = candidate && (busy ? listeningReason
+    : !hasRequiredQuantity(candidate) ? "Quantity is required before this order can be saved."
+    : candidate.unresolved.length ? "Confirm or correct the highlighted details before saving." : "");
   const canConfirm = candidate && candidate.unresolved.length > 0 && candidate.unresolved.every(target => canConfirmField(candidate, target));
   const latest = useRef({ announce, stopSpeech });
   useEffect(() => { latest.current = { announce, stopSpeech }; });
@@ -71,6 +79,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     setError("");
     provider.current = mode === "order" ? createOrderTranscription() : createOrderResponseRecognition();
     spoken.current = true;
+    setListeningMode(mode);
     setPhase("requesting");
     setStatus("Requesting microphone permission. Cancel remains available.");
     provider.current?.start({
@@ -156,7 +165,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     }
     catch { setStatus("Use Change to confirm uncertain fields. Names must be at most 160 characters, platforms 120, brands and variants 100, and sizes 60."); if (draft.unresolved[0]) void change(draft, draft.unresolved[0]); }
   }
-  return <section className="panel" aria-labelledby="voice-order-heading">
+  return <section className="panel voice-order" aria-labelledby="voice-order-heading">
     <h2 id="voice-order-heading" ref={heading} tabIndex={-1}>{candidate ? editing ? "Change one detail" : "Review your order" : "Tell OrderCheck what I ordered"}</h2>
     <p>Describe your order naturally. Include the product name, quantity, size and variant when you know them.</p>
     <p aria-live="polite" aria-atomic="true">{status}</p>
@@ -172,12 +181,12 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     {error && <p id="order-transcript-error" ref={errorMessage} role="alert" tabIndex={-1}>{error}</p>}
     {!candidate && <button className="primary" disabled={!transcript.trim() || busy} onClick={() => process()}>Review order</button>}
     {candidate && <>
-      <section aria-labelledby="raw-transcription-heading">
+      <section className="voice-order-transcript" aria-labelledby="raw-transcription-heading">
         <h3 id="raw-transcription-heading">Raw transcription</h3>
-        <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{transcript}</p>
+        <p>{transcript}</p>
       </section>
-      {candidate.platform && <p>Platform: {candidate.platform}</p>}
-      <ol>{candidate.items.map((item, index) => <li key={item.id}><h3>Product {index + 1}: {item.name || "Name needs confirmation"}</h3><dl>{orderFields.filter(field => field !== "name" && fieldValue(item, field)).map(field => <div key={field}><dt>{field}</dt><dd>{fieldValue(item, field)}</dd></div>)}</dl></li>)}</ol>
+      {candidate.platform && <p className="voice-order-platform"><strong>Platform:</strong> {candidate.platform}</p>}
+      <ol className="voice-order-products">{candidate.items.map((item, index) => <li className="voice-order-product" key={item.id}><h3>Product {index + 1}</h3><p className="voice-order-name">{item.name || "Name needs confirmation"}</p><dl className="voice-order-details">{orderFields.filter(field => field !== "name" && fieldValue(item, field)).map(field => <div key={field}><dt>{field}</dt><dd>{fieldValue(item, field)}</dd></div>)}</dl></li>)}</ol>
       {candidate.unresolved.length > 0 && <p><strong>Needs confirmation: {candidate.unresolved.map(t => `${"index" in t ? `product ${t.index + 1} ` : ""}${t.field}`).join(", ")}.</strong></p>}
       <p id="voice-order-save-reason" role="status" aria-atomic="true">{saveReason}</p>
       {editing ? <>
