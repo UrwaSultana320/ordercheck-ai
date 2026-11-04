@@ -19,6 +19,8 @@ test("explicit confirmation of heard name saves an order and offers scanning wit
   await page.getByLabel("Allow order audio transcription", { exact: false }).check();
   await page.getByRole("button", { name: "Start order recording", exact: true }).click();
   await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel recording", exact: true }).click();
   const save = page.getByRole("button", { name: "Confirm and save voice order", exact: true });
   await expect(save).toBeDisabled();
   await expect(page.getByText("Confirm or correct the highlighted details before saving.", { exact: true })).toBeVisible();
@@ -138,10 +140,11 @@ test("unsupported dictation offers typed fallback", async ({ page }) => {
 });
 async function mockSpeech(page: Page, denied = false) {
   await page.addInitScript(({ denied }) => {
-    const host = window as unknown as Window & { __orderRec: MockRecognition; __spoken: string[]; __spokenEnded: string[]; __responseStarts: number };
+    const host = window as unknown as Window & { __orderRec: MockRecognition; __spoken: string[]; __spokenEnded: string[]; __responseStarts: number; __holdReadback: boolean; __finishReadback?: () => void };
     host.__spoken = [];
     host.__spokenEnded = [];
     host.__responseStarts = 0;
+    host.__holdReadback = false;
     class MockRecognition {
       lang = ""; continuous = false; interimResults = false;
       onstart: (() => void) | null = null; onend: (() => void) | null = null;
@@ -154,7 +157,10 @@ async function mockSpeech(page: Page, denied = false) {
       emit(text: string) { this.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] }); }
     }
     Object.defineProperty(window, "SpeechRecognition", { value: MockRecognition, configurable: true });
-    Object.defineProperty(window.speechSynthesis, "speak", { value: (u: SpeechSynthesisUtterance) => { host.__spoken.push(u.text); setTimeout(() => { host.__spokenEnded.push(u.text); u.onend?.(new Event("end") as SpeechSynthesisEvent); }, 20); } });
+    Object.defineProperty(window.speechSynthesis, "speak", { value: (u: SpeechSynthesisUtterance) => { host.__spoken.push(u.text);
+      const finish = () => { host.__spokenEnded.push(u.text); u.onend?.(new Event("end") as SpeechSynthesisEvent); };
+      if (host.__holdReadback && u.text.includes("I heard:")) host.__finishReadback = finish;
+      else setTimeout(finish, 20); } });
     Object.defineProperty(window.speechSynthesis, "cancel", { value: () => {} });
   }, { denied });
 }
@@ -216,7 +222,7 @@ test("failed review focuses an inline alert and an edited speech-style transcrip
 });
 
 for (const ending of ["Finish recording", "recorder end", "maximum duration"] as const) {
-  test(`server transcript automatically focuses review with microphone off after ${ending}`, async ({ page }) => {
+  test(`server transcript completes readback then automatically listens after ${ending}`, async ({ page }) => {
     await mockSpeech(page);
     await mockRecording(page, "I ordered from Daraz and I ordered two Dove shampoos 400 ml and one Nescafe coffee 200 grams");
     if (ending === "maximum duration") await page.clock.install();
@@ -230,12 +236,12 @@ for (const ending of ["Finish recording", "recorder end", "maximum duration"] as
     await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused({ timeout: 10000 });
     await expect(page.getByRole("heading", { name: "Product 1: Dove shampoos", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Product 2: Nescafe coffee", exact: true })).toBeVisible();
-    await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as unknown as { __spokenEnded: string[] }).__spokenEnded.some(s => s.includes("I heard:")))).toBe(true);
-    expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
     expect(await page.evaluate(() => (window as unknown as { __micRequests: number }).__micRequests)).toBe(1);
     expect(await page.evaluate(() => (window as unknown as { __tracksStopped: number }).__tracksStopped)).toBe(1);
-    await expect(page.getByRole("button", { name: "Cancel recording", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Cancel recording", exact: true })).toBeEnabled();
   });
 }
 
@@ -263,9 +269,8 @@ test("server dictation, readback, explicit targeted voice correction and explici
   await page.getByRole("button", { name: "Start order recording", exact: true }).click();
   await page.getByRole("button", { name: "Finish recording", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused();
-  await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as Window & { __spoken: string[] }).__spoken.some(s => s.includes("I heard:")))).toBe(true);
-  await page.getByRole("button", { name: "Speak response", exact: true }).click();
   await expect(page.getByText(/Listening for Confirm, Change/)).toBeVisible();
   await emit(page, "change size for product 0");
   await expect(page.getByText("That product number does not exist. Use Change to select a product.", { exact: true })).toBeVisible();
@@ -278,9 +283,8 @@ test("server dictation, readback, explicit targeted voice correction and explici
   await expect(page.getByText(/Listening for this correction/)).toBeVisible();
   await emit(page, "500 ml stop recording");
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused();
-  await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
   await expect(page.getByText("500 ml", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Speak response", exact: true }).click();
   await emit(page, "confirm stop recording");
   await expect(page.getByRole("heading", { name: "Check your delivery", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toHaveCount(0);
@@ -329,9 +333,11 @@ test("successful dictation can be inspected and edited; explicit save persists n
   expect(await raw.locator("p").textContent()).toBe(transcript);
   await expect(raw.locator("p")).toHaveCSS("white-space", "pre-wrap");
   expect(await raw.evaluate(section => section.nextElementSibling?.textContent)).toBe("Platform: Shop");
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel recording", exact: true }).click();
   await page.getByRole("button", { name: "Read back order", exact: true }).click();
-  await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(2);
   await page.getByRole("button", { name: "Edit order transcript", exact: true }).click();
   await expect(page.getByLabel("Order transcript", { exact: true })).toBeEditable();
   await expect(raw).toHaveCount(0);
@@ -404,10 +410,13 @@ test("voice review reflows with large text and high contrast and passes axe", as
 for (const denied of [false, true]) {
   test(`spoken Confirm confirms uncertain values, saves and requests camera; denied=${denied}`, async ({ page }) => {
     await mockSpeech(page);
+    await mockRecording(page, "one Head and shoulders anti-denture");
     await page.addInitScript(({ denied }) => {
       const host = window as unknown as { __cameraRequests: MediaStreamConstraints[]; __releaseCamera: () => void };
       host.__cameraRequests = [];
+      const microphone = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async (constraints: MediaStreamConstraints) => {
+        if (!constraints.video) return microphone(constraints);
         host.__cameraRequests.push(constraints);
         await new Promise<void>(resolve => { host.__releaseCamera = resolve; });
         if (denied) throw new DOMException("denied", "NotAllowedError");
@@ -419,9 +428,10 @@ for (const denied of [false, true]) {
     await openVoice(page);
     await page.getByLabel("Keep orders in this browser tab for this session").check();
     await page.getByLabel("Allow order audio transcription", { exact: false }).check();
-    await review(page, "one Head and shoulders anti-denture");
+    await page.getByRole("button", { name: "Start order recording", exact: true }).click();
+    await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+    await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Confirm and save voice order", exact: true })).toBeDisabled();
-    await page.getByRole("button", { name: "Speak response", exact: true }).click();
     await emit(page, "confirm");
     await expect(page.getByRole("heading", { name: "Check your delivery", exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests.length)).toBe(1);
@@ -430,7 +440,18 @@ for (const denied of [false, true]) {
     expect(before.speeches).toContain("Order confirmed and saved. Opening the delivery scanner. Your browser may ask for camera permission.");
     expect(before.speeches).not.toContain("Camera started. Hold one product in front of the camera.");
     expect(await page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests[0])).toEqual({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    await page.evaluate(() => (window as unknown as { __releaseCamera: () => void }).__releaseCamera());
+    // Simulate a mobile permission dialog taking focus/visibility, then Allow.
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("blur"));
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await expect(page.getByRole("region", { name: "Session controls" })).toContainText("requesting permission");
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange")); window.dispatchEvent(new Event("focus"));
+      (window as unknown as { __releaseCamera: () => void }).__releaseCamera();
+    });
     if (denied) {
       await expect(page.getByRole("status")).toContainText("Camera permission was not granted.");
       await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
@@ -439,8 +460,9 @@ for (const denied of [false, true]) {
       await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("Camera started. Hold one product in front of the camera."))).toBe(true);
       await expect(page.getByText("Place the front label inside the guide.", { exact: true })).toBeVisible();
       await expect(page.locator(".label-guide")).toBeVisible();
-      await page.getByRole("button", { name: "Stop camera", exact: true }).click();
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     }
+    expect(await page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests.length)).toBe(1);
     const fallback = page.getByRole("button", { name: "Start camera", exact: true });
     await fallback.scrollIntoViewIfNeeded(); await expect(fallback).toBeInViewport();
     await expect(page.getByLabel("Enter a barcode")).toBeEnabled();
@@ -457,3 +479,59 @@ test("spoken Confirm speaks the missing product quantity and leaves correction a
   await page.getByRole("button", { name: "Change", exact: true }).click();
   await expect(page.getByLabel("Correct value", { exact: true })).toBeEditable();
 });
+
+test("voice readback finishes before one automatic response window; timeout preserves draft and fallback", async ({ page }) => {
+  await mockSpeech(page); await mockRecording(page, "one soap");
+  await page.clock.install();
+  await openVoice(page);
+  await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+  await page.evaluate(() => { (window as unknown as { __holdReadback: boolean }).__holdReadback = true; });
+  await page.getByRole("button", { name: "Start order recording", exact: true }).click();
+  await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { __finishReadback?: unknown }).__finishReadback)).toBe("function");
+  await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
+  await page.clock.runFor(250);
+  expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
+  await page.evaluate(() => (window as unknown as { __finishReadback: () => void }).__finishReadback());
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+  const result = await page.evaluate(() => ({ starts: (window as unknown as { __responseStarts: number }).__responseStarts, readback: (window as unknown as { __spokenEnded: string[] }).__spokenEnded }));
+  expect(result.starts).toBe(1);
+  expect(result.readback.some(text => text.includes("Say Confirm to save this order, Change to correct it, or Start again."))).toBe(true);
+  await page.clock.fastForward(15001);
+  await expect(page.getByText("No response heard. Use Speak response or the buttons to continue.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Product 1: soap", exact: true })).toBeVisible();
+  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await page.clock.fastForward(20000);
+  expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
+  await page.getByRole("button", { name: "Speak response", exact: true }).click();
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+});
+test("typed review and explicit readback never auto-listen; Speak response remains available", async ({ page }) => {
+  await mockSpeech(page); await openVoice(page);
+  await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+  await review(page, "one soap");
+  await page.getByRole("button", { name: "Read back order", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __spokenEnded: string[] }).__spokenEnded.some(s => s.includes("I heard:")))).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
+  await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Speak response", exact: true }).click();
+  await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
+});
+for (const interruption of ["Escape", "revoke consent"] as const) {
+  test(`interrupted readback cannot open a late command listener: ${interruption}`, async ({ page }) => {
+    await mockSpeech(page); await mockRecording(page, "one soap"); await openVoice(page);
+    await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+    await page.evaluate(() => { (window as unknown as { __holdReadback: boolean }).__holdReadback = true; });
+    await page.getByRole("button", { name: "Start order recording", exact: true }).click();
+    await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as unknown as { __finishReadback?: unknown }).__finishReadback)).toBe("function");
+    if (interruption === "Escape") await page.keyboard.press("Escape");
+    else await page.getByLabel("Allow order audio transcription", { exact: false }).uncheck();
+    await page.evaluate(() => (window as unknown as { __finishReadback: () => void }).__finishReadback());
+    await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
+    await expect(page.getByRole("heading", { name: "Product 1: soap", exact: true })).toBeVisible();
+  });
+}

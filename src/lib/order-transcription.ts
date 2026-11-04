@@ -70,6 +70,7 @@ export class BrowserTranscription implements TranscriptionProvider {
       if (this.rec !== rec) return;
       if (!this.host.active()) { this.cancel(); return; }
       this.cancel();
+      if (e.error === "no-speech" && limitMs <= 15000) { events.complete(""); return; }
       events.error(e.error === "language-not-supported" ? "Your browser provider does not support the selected speech language. Select English (US) as a fallback and try again, or type your order." : e.error === "not-allowed" || e.error === "service-not-allowed" ? "Microphone permission denied. Allow microphone access or type your order." : `Listening stopped (${e.error}). Try again or type your order.`);
     };
     this.timer = setTimeout(stop, limitMs);
@@ -86,7 +87,7 @@ export class BrowserTranscription implements TranscriptionProvider {
 export function createOrderTranscription(): TranscriptionProvider {
   return new RecordedOrderTranscription(browserOrderRecordingHost());
 }
-/** Only explicit short responses/corrections use browser recognition. */
+/** Bounded review responses/corrections use browser recognition. */
 export function createOrderResponseRecognition(locale: OrderDictationLocale = defaultOrderDictationLocale): TranscriptionProvider {
   return new BrowserTranscription(browserVoiceHost(), locale);
 }

@@ -86,7 +86,13 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
         const command = text.toLowerCase().trim().replace(/[.!?]+$/, "");
         if (command === "cancel") { cancelListening(); close(); return; }
         if (command === "start again") { reset(); return; }
-        if (!text.trim()) { showError("Nothing heard. Try again or use the field controls."); return; }
+        if (!text.trim()) {
+          if (mode === "command") {
+            const message = "No response heard. Use Speak response or the buttons to continue.";
+            setStatus(message); void announce(message, true);
+          } else showError("Nothing heard. Try again or use the field controls.");
+          return;
+        }
         if (mode === "correction" && draft && target) {
           try { const updated = correctOrder(draft, target, text); setCandidate(updated); setEditing(false); void review(updated); }
           catch { setStatus("Could not apply that correction. Use the field controls."); }
@@ -103,11 +109,22 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     }, mode === "order" ? 60000 : 15000);
   }
   async function review(draft: OrderCandidate) {
+    // Cancel any prior response window and invalidate an interrupted readback.
+    cancelListening();
     setCandidate(draft); setEditing(false);
-    const summary = `${orderReadback(draft)} The microphone is off. Use the controls, or choose Speak response before speaking.`;
+    const automatic = dictated.current && consent;
+    const summary = `${orderReadback(draft)} ${automatic
+      ? "Say Confirm to save this order, Change to correct it, or Start again."
+      : "The microphone is off. Use the controls, or choose Speak response before speaking."}`;
     setStatus(summary);
-    epoch.current++;
+    const token = ++epoch.current;
     await announce(summary, spoken.current);
+    // Global Stop/blur handlers can cancel speech before the composer's own
+    // interruption handler runs. Let that event finish before checking intent.
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    // Speech completion is also resolved on cancellation; only the current,
+    // uninterrupted review may open a single bounded response window.
+    if (automatic && epoch.current === token) listen("command", draft);
   }
   function process(value = transcript) {
     cancelListening();

@@ -313,3 +313,17 @@ describe("bounded dictation provider", () => {
     }
   });
 });
+
+it("short response timeout and browser no-speech release recognition without a provider error", () => {
+  vi.useFakeTimers();
+  const events = { started: vi.fn(), complete: vi.fn(), error: vi.fn() };
+  const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+  p.start(events, 15000); const rec = FakeRecognition.last;
+  vi.advanceTimersByTime(15000);
+  expect(events.complete).toHaveBeenCalledExactlyOnceWith("");
+  expect(rec.abort).toHaveBeenCalledOnce();
+  expect(events.error).not.toHaveBeenCalled();
+  p.start(events, 15000); FakeRecognition.last.onerror?.({ error: "no-speech" });
+  expect(events.complete).toHaveBeenCalledTimes(2);
+  expect(events.error).not.toHaveBeenCalled();
+});

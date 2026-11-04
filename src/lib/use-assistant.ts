@@ -218,10 +218,16 @@ export function useAssistant(
         "Ready. Start checking, or add your purchase reference first.",
       );
     });
-    const pause = () => {
-      if (document.visibilityState !== "visible") actions.current?.stop();
+    // Browser/OS permission UI can temporarily blur or hide this document.
+    // Keep the same pending getUserMedia request alive; explicit Stop, Escape,
+    // navigation and unmount still cancel it. Running cameras retain cleanup.
+    const interrupt = () => {
+      if (phaseRef.current !== "requesting-permission") actions.current?.stop();
     };
-    const blur = () => actions.current?.stop();
+    const pause = () => {
+      if (document.visibilityState !== "visible") interrupt();
+    };
+    const blur = interrupt;
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") actions.current?.stop();
     };
