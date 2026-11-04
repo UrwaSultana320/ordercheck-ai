@@ -331,3 +331,21 @@ test("stable empty view reports no readable evidence, speaks recovery and never 
   expect(speeches).toContain(recovery);
   expect(speeches.join(" ")).not.toMatch(/good position|product detected|product found|match/i);
 });
+
+test("unknown decoded barcode with empty OCR retains existing rotation recovery", async ({ page }) => {
+  await installCamera(page, true, 1, true);
+  const matrix = new QRCodeWriter().encode("UNKNOWN-REAL-PACKAGE", BarcodeFormat.QR_CODE, 200, 200, new Map());
+  const points: [number, number][] = [];
+  for (let y = 0; y < 200; y++) for (let x = 0; x < 200; x++) if (matrix.get(x, y)) points.push([x, y]);
+  await page.goto("/");
+  await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
+  await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
+  await expect(page.locator("#camera-guidance")).toHaveText("I could not read this side. Slowly rotate the product.", { timeout: 20000 });
+  const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
+  await expect(diagnostics).toContainText("Barcode detected: UNKNOWN-REAL-PACKAGE");
+  await expect(diagnostics).toContainText("Barcode known: no");
+  await expect(diagnostics).toContainText("OCR attempts: 1");
+  const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
+  expect(saved.orders[0].items[0].verified).toBe(0);
+  expect(saved.attempts).toHaveLength(0);
+});

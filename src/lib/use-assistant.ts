@@ -539,7 +539,7 @@ export function useAssistant(
       setDiagnostics(d => ({ ...d, ocrConfidence: observed.confidence, ocrText: observed.text }));
       if (observed.confidence < 35 || !/[\p{L}\p{N}]{3}/u.test(observed.text)) {
         phaseTo("scanning");
-        const instruction = !/[\p{L}\p{N}]{3}/u.test(observed.text) ? GUIDANCE.noLabel : GUIDANCE.unreadable;
+        const instruction = !snapshotBarcode && !/[\p{L}\p{N}]{3}/u.test(observed.text) ? GUIDANCE.noLabel : GUIDANCE.unreadable;
         ocrRecovery.current = instruction;
         setDiagnostics(d => ({ ...d, verification: "unable" }));
         setResult({ status: "INCOMPLETE", reason: "LOW_CONFIDENCE", message: instruction });
