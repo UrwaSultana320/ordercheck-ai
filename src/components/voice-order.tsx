@@ -5,6 +5,8 @@ import { canConfirmField, confirmCurrentDetails, hasRequiredQuantity, confirmOrd
 import { createOrderTranscription, createOrderResponseRecognition, onOrderInterruption, type TranscriptionProvider } from "@/lib/order-transcription";
 
 type Props = { save(order: Order, spoken: boolean): void; close(): void; announce(text: string, spoken?: boolean): Promise<void>; stopSpeech(): void };
+type ResponseDiagnostic = { raw: string | null; normalized: string | null; state: "idle" | "requesting microphone" | "listening" | "received response" | "no speech" | "recognition error" | "processing command"; error: string | null };
+const emptyResponseDiagnostic: ResponseDiagnostic = { raw: null, normalized: null, state: "idle", error: null };
 export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
@@ -13,6 +15,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   const [status, setStatus] = useState("Ready. Type your order or allow the microphone and begin.");
   const [phase, setPhase] = useState<"idle" | "requesting" | "recording" | "transcribing">("idle");
   const [listeningMode, setListeningMode] = useState<"order" | "command" | "correction">("order");
+  const [responseDiagnostic, setResponseDiagnostic] = useState<ResponseDiagnostic>(emptyResponseDiagnostic);
   const listening = phase === "recording", busy = phase !== "idle";
   const [consent, setConsent] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -41,6 +44,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
       provider.current?.cancel();
       latest.current.stopSpeech();
       setPhase("idle");
+      setResponseDiagnostic(value => ({ ...value, state: "idle" }));
       setStatus("Listening stopped. Your unsaved draft remains available. Start listening explicitly to continue.");
     });
     const focus = requestAnimationFrame(() => heading.current?.focus());
@@ -54,7 +58,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     return () => cancelAnimationFrame(frame);
   }, [candidate, editing]);
   useEffect(() => { if (error) errorMessage.current?.focus(); }, [error]);
-  function cancelListening() { epoch.current++; provider.current?.cancel(); stopSpeech(); setPhase("idle"); }
+  function cancelListening() { epoch.current++; provider.current?.cancel(); stopSpeech(); setPhase("idle"); setResponseDiagnostic(value => ({ ...value, state: "idle" })); }
   function showError(message: string) {
     setError(message);
     // Repeated identical errors must also regain focus. New errors are focused
@@ -63,6 +67,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   }
   function reset() {
     cancelListening(); dictated.current = false; setTranscript(""); setError(""); setCandidate(null); setEditing(false); setAnswer("");
+    setResponseDiagnostic(emptyResponseDiagnostic);
     setStatus("Start again. Nothing saved. Describe your order when ready.");
   }
   function targetFrom(key: string): Correction {
@@ -81,11 +86,15 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     spoken.current = true;
     setListeningMode(mode);
     setPhase("requesting");
+    if (mode === "command") setResponseDiagnostic({ ...emptyResponseDiagnostic, state: "requesting microphone" });
+    else if (mode === "order") setResponseDiagnostic(emptyResponseDiagnostic);
     setStatus("Requesting microphone permission. Cancel remains available.");
     provider.current?.start({
-      started: () => { setPhase("recording"); setStatus(mode === "order" ? "Listening to your order. Choose Finish recording when done. Maximum 60 seconds." : mode === "command" ? "Listening for Confirm, Change, Start again, or Cancel. Up to 15 seconds." : "Listening for this correction. Up to 15 seconds."); },
+      started: () => { setPhase("recording"); if (mode === "command") setResponseDiagnostic(value => ({ ...value, state: "listening" })); setStatus(mode === "order" ? "Listening to your order. Choose Finish recording when done. Maximum 60 seconds." : mode === "command" ? "Listening for Confirm, Change, Start again, or Cancel. Up to 15 seconds." : "Listening for this correction. Up to 15 seconds."); },
       transcribing: () => { setPhase("transcribing"); setStatus("Transcribing your order. The microphone is off. Cancel remains available."); },
-      error: message => { setPhase("idle"); setStatus("Listening stopped. Nothing saved yet."); showError(message); },
+      rawResponse: text => { if (mode === "command") setResponseDiagnostic(value => ({ ...value, raw: text, state: text ? "received response" : "no speech" })); },
+      recognitionError: code => { if (mode === "command") setResponseDiagnostic(value => ({ ...value, error: code, state: code === "no-speech" ? "no speech" : "recognition error" })); },
+      error: message => { setPhase("idle"); if (mode === "command") setResponseDiagnostic(value => ({ ...value, state: "recognition error" })); setStatus("Listening stopped. Nothing saved yet."); showError(message); },
       complete: text => {
         setPhase("idle");
         setStatus("Listening ended. Nothing saved yet.");
@@ -93,6 +102,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
           dictated.current = true; setTranscript(text); process(text); return;
         }
         const command = text.toLowerCase().trim().replace(/[.!?]+$/, "");
+        if (mode === "command") setResponseDiagnostic(value => ({ ...value, normalized: command, state: text.trim() ? "processing command" : "no speech" }));
         if (command === "cancel") { cancelListening(); close(); return; }
         if (command === "start again") { reset(); return; }
         if (!text.trim()) {
@@ -112,7 +122,10 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
             const chosen: Correction = match ? match[1] === "platform" ? { field: "platform" } : { index: Number(match[2] ?? 1) - 1, field: match[1] as Exclude<Correction["field"], "platform"> } : (draft.unresolved[0] ?? { index: 0, field: "name" });
             if ("index" in chosen && (chosen.index < 0 || chosen.index >= draft.items.length)) { setStatus("That product number does not exist. Use Change to select a product."); return; }
             void change(draft, chosen);
-          } else setStatus("Command not recognized. Say Confirm, Change, or Start again in a new listening window, or use the buttons.");
+          } else {
+            if (mode === "command") setResponseDiagnostic(value => ({ ...value, state: "received response" }));
+            setStatus("Command not recognized. Say Confirm, Change, or Start again in a new listening window, or use the buttons.");
+          }
         }
       },
     }, mode === "order" ? 60000 : 15000);
@@ -137,6 +150,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
   }
   function process(value = transcript) {
     cancelListening();
+    setResponseDiagnostic(emptyResponseDiagnostic);
     setError("");
     try { void review(extractSpokenOrder(value)); }
     catch (e) { showError(e instanceof Error ? e.message : "Could not interpret the order. Please try again."); }
@@ -181,6 +195,13 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     {error && <p id="order-transcript-error" ref={errorMessage} role="alert" tabIndex={-1}>{error}</p>}
     {!candidate && <button className="primary" disabled={!transcript.trim() || busy} onClick={() => process()}>Review order</button>}
     {candidate && <>
+      <section aria-labelledby="voice-response-diagnostic-heading" style={{ minWidth: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>
+        <h3 id="voice-response-diagnostic-heading">Voice response diagnostic</h3>
+        <p>Last voice response heard: {responseDiagnostic.raw === null ? "no response yet" : responseDiagnostic.raw === "" ? "nothing" : `"${responseDiagnostic.raw}"`}</p>
+        <p>Normalized command: {responseDiagnostic.normalized === null ? "not processed" : `"${responseDiagnostic.normalized}"`}</p>
+        <p>Voice response state: {responseDiagnostic.state}</p>
+        {responseDiagnostic.error && <p>Voice response error: {responseDiagnostic.error}</p>}
+      </section>
       <section className="voice-order-transcript" aria-labelledby="raw-transcription-heading">
         <h3 id="raw-transcription-heading">Raw transcription</h3>
         <p>{transcript}</p>

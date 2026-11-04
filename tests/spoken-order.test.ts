@@ -214,6 +214,35 @@ class FakeRecognition implements Recognition {
 afterEach(() => vi.useRealTimers());
 describe("bounded dictation provider", () => {
   const events = () => ({ started: vi.fn(), complete: vi.fn(), error: vi.fn() });
+  it("reports untouched short-response text before provider cleanup and ignores cancelled results", () => {
+    const e = { ...events(), rawResponse: vi.fn() };
+    const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+    p.start(e, 15000);
+    FakeRecognition.last.result("  Confirm order stop recording.  ");
+    expect(e.rawResponse).toHaveBeenCalledExactlyOnceWith("  Confirm order stop recording.  ");
+    expect(e.complete).toHaveBeenCalledExactlyOnceWith("Confirm order");
+    expect(e.rawResponse.mock.invocationCallOrder[0]).toBeLessThan(e.complete.mock.invocationCallOrder[0]);
+    p.start(e, 15000);
+    const late = FakeRecognition.last.onresult!;
+    p.cancel();
+    late({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: "stale" } }] });
+    expect(e.rawResponse).toHaveBeenCalledOnce();
+  });
+  it.each(["no-speech", "not-allowed", "network", "private error message\nstack trace"])("reports a safe browser error identifier for %s", code => {
+    const e = { ...events(), rawResponse: vi.fn(), recognitionError: vi.fn() };
+    const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });
+    p.start(e, 15000);
+    FakeRecognition.last.onerror?.({ error: code });
+    expect(e.recognitionError).toHaveBeenCalledExactlyOnceWith(code.includes("\n") ? "unknown" : code);
+    if (code === "no-speech") {
+      expect(e.rawResponse).toHaveBeenCalledExactlyOnceWith("");
+      expect(e.complete).toHaveBeenCalledExactlyOnceWith("");
+      expect(e.error).not.toHaveBeenCalled();
+    } else {
+      expect(e.rawResponse).not.toHaveBeenCalled();
+      expect(e.complete).not.toHaveBeenCalled();
+    }
+  });
   it("configures Pakistani English and an explicit US fallback without guessing provider support", () => {
     const e = events();
     const p = new BrowserTranscription({ active: () => true, recognition: FakeRecognition });

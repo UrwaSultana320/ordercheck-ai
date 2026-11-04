@@ -9,7 +9,7 @@ export type OrderDictationLocale = typeof orderDictationLocales[number]["value"]
 export const defaultOrderDictationLocale: OrderDictationLocale = "en-PK";
 
 export interface TranscriptionProvider {
-  start(events: { started(): void; transcribing?(): void; complete(text: string): void; error(message: string): void }, limitMs?: number): void;
+  start(events: { started(): void; transcribing?(): void; complete(text: string): void; error(message: string): void; rawResponse?(text: string): void; recognitionError?(code: string): void }, limitMs?: number): void;
   stop(): void;
   cancel(): void;
 }
@@ -35,8 +35,10 @@ export class BrowserTranscription implements TranscriptionProvider {
     const finish = () => {
       if (this.rec !== rec) return;
       if (!this.host.active()) { this.cancel(); return; }
-      const text = parts.join(" ").trim().replace(/\bstop recording[.!?]*$/i, "").trim();
+      const raw = parts.join(" ");
+      const text = raw.trim().replace(/\bstop recording[.!?]*$/i, "").trim();
       this.cancel();
+      events.rawResponse?.(raw);
       events.complete(text);
     };
     const stop = () => {
@@ -70,7 +72,9 @@ export class BrowserTranscription implements TranscriptionProvider {
       if (this.rec !== rec) return;
       if (!this.host.active()) { this.cancel(); return; }
       this.cancel();
-      if (e.error === "no-speech" && limitMs <= 15000) { events.complete(""); return; }
+      // Only expose a bounded browser error identifier, never a message/stack.
+      events.recognitionError?.(/^[a-z][a-z-]{0,63}$/.test(e.error) ? e.error : "unknown");
+      if (e.error === "no-speech" && limitMs <= 15000) { events.rawResponse?.(""); events.complete(""); return; }
       events.error(e.error === "language-not-supported" ? "Your browser provider does not support the selected speech language. Select English (US) as a fallback and try again, or type your order." : e.error === "not-allowed" || e.error === "service-not-allowed" ? "Microphone permission denied. Allow microphone access or type your order." : `Listening stopped (${e.error}). Try again or type your order.`);
     };
     this.timer = setTimeout(stop, limitMs);

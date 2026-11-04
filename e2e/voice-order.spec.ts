@@ -517,9 +517,78 @@ test("typed review and explicit readback never auto-listen; Speak response remai
   await expect.poll(() => page.evaluate(() => (window as unknown as { __spokenEnded: string[] }).__spokenEnded.some(s => s.includes("I heard:")))).toBe(true);
   expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
   await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  const diagnostic = page.getByRole("region", { name: "Voice response diagnostic", exact: true });
+  await expect(diagnostic).toContainText("Last voice response heard: no response yet");
+  await expect(diagnostic).toContainText("Normalized command: not processed");
+  await expect(diagnostic).toContainText("Voice response state: idle");
   await page.getByRole("button", { name: "Speak response", exact: true }).click();
   await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
 });
+
+for (const [raw, normalized] of [["confirm order", "confirm order"], ["  Confirm order.  ", "confirm order"], ["Confirm order stop recording.", "confirm order"], ["Unrecognized".repeat(40), "unrecognized".repeat(40)]]) {
+  test(`short response diagnostic preserves raw browser text and draft: ${raw.slice(0, 40)}`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await mockSpeech(page); await mockRecording(page, "two soaps"); await openVoice(page);
+    await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+    await page.getByRole("button", { name: "Start order recording", exact: true }).click();
+    await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+    const diagnostic = page.getByRole("region", { name: "Voice response diagnostic", exact: true });
+    await expect(diagnostic).toContainText("Voice response state: listening");
+    await emit(page, raw);
+    // textContent checks preserve spaces and punctuation exactly.
+    expect(await diagnostic.locator("p").nth(0).textContent()).toBe(`Last voice response heard: "${raw}"`);
+    expect(await diagnostic.locator("p").nth(1).textContent()).toBe(`Normalized command: "${normalized}"`);
+    await expect(diagnostic).toContainText("Voice response state: received response");
+    await expect(page.getByText(/^Command not recognized\./)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeVisible();
+    await expect(page.getByText("soaps", { exact: true })).toBeVisible();
+    await expect(page.getByText("2", { exact: true })).toBeVisible();
+    await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+    const speak = page.getByRole("button", { name: "Speak response", exact: true });
+    await expect(speak).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { __micRequests: number }).__micRequests)).toBe(1);
+    expect((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze()).violations).toEqual([]);
+    await speak.click();
+    await expect(diagnostic).toContainText("Voice response state: listening");
+    await page.getByRole("button", { name: "Cancel recording", exact: true }).click();
+    await page.getByRole("button", { name: "Edit order transcript", exact: true }).click();
+    await review(page, "one coffee");
+    await expect(diagnostic).toContainText("Last voice response heard: no response yet");
+    await expect(diagnostic).toContainText("Normalized command: not processed");
+    await expect(diagnostic).toContainText("Voice response state: idle");
+  });
+}
+
+for (const outcome of ["no-speech", "not-allowed", "network", "end without speech", "timeout"] as const) {
+  test(`short response diagnostic displays ${outcome} and preserves retry`, async ({ page }) => {
+    await mockSpeech(page); await mockRecording(page, "one soap");
+    if (outcome === "timeout") await page.clock.install();
+    await openVoice(page);
+    await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+    await page.getByRole("button", { name: "Start order recording", exact: true }).click();
+    await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+    const diagnostic = page.getByRole("region", { name: "Voice response diagnostic", exact: true });
+    await expect(diagnostic).toContainText("Voice response state: listening");
+    if (outcome === "timeout") await page.clock.fastForward(15001);
+    else await page.evaluate(outcome => {
+      const rec = (window as unknown as { __orderRec: { onerror(e: { error: string }): void; onend(): void } }).__orderRec;
+      if (outcome === "end without speech") rec.onend();
+      else rec.onerror({ error: outcome });
+    }, outcome);
+    const noSpeech = ["no-speech", "end without speech", "timeout"].includes(outcome);
+    await expect(diagnostic).toContainText(`Voice response state: ${noSpeech ? "no speech" : "recognition error"}`);
+    await expect(diagnostic).toContainText(`Last voice response heard: ${noSpeech ? "nothing" : "no response yet"}`);
+    await expect(diagnostic).toContainText(`Normalized command: ${noSpeech ? '""' : "not processed"}`);
+    if (outcome !== "end without speech" && outcome !== "timeout") await expect(diagnostic).toContainText(`Voice response error: ${outcome}`);
+    else await expect(diagnostic).not.toContainText("Voice response error:");
+    await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeVisible();
+    await expect(page.getByText("soap", { exact: true })).toBeVisible();
+    await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Speak response", exact: true })).toBeEnabled();
+    expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
+  });
+}
 for (const interruption of ["Escape", "revoke consent"] as const) {
   test(`interrupted readback cannot open a late command listener: ${interruption}`, async ({ page }) => {
     await mockSpeech(page); await mockRecording(page, "one soap"); await openVoice(page);
