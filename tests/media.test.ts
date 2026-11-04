@@ -8,6 +8,12 @@ const fake = vi.hoisted(() => ({
 vi.mock("tesseract.js", () => ({ createWorker: fake.create }));
 afterEach(() => vi.clearAllMocks());
 describe("bounded media processing (mocked OCR)", () => {
+  it("does not report an OCR attempt when worker initialization fails", async () => {
+    fake.create.mockRejectedValueOnce(new Error("Worker unavailable"));
+    const onRecognize = vi.fn();
+    await expect(new OcrReader().read("image", onRecognize)).rejects.toThrow("Worker unavailable");
+    expect(onRecognize).not.toHaveBeenCalled();
+  });
   it("rejects empty, large, corrupt and unsupported files and honors cancellation", async () => {
     await expect(
       readImport(new File([], "empty.txt", { type: "text/plain" })),
@@ -51,12 +57,17 @@ describe("bounded media processing (mocked OCR)", () => {
       )
       .mockResolvedValue({ data: { text: "label", confidence: 90 } });
     const reader = new OcrReader(),
-      first = reader.read("image");
+      onRecognize = vi.fn(),
+      first = reader.read("image", onRecognize);
+    expect(onRecognize).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(fake.recognize).toHaveBeenCalled());
-    await expect(reader.read("another")).rejects.toThrow("already");
+    expect(onRecognize).toHaveBeenCalledTimes(1);
+    await expect(reader.read("another", onRecognize)).rejects.toThrow("already");
+    expect(onRecognize).toHaveBeenCalledTimes(1);
     finish({ data: { text: "label", confidence: 90 } });
     await first;
-    await reader.read("second");
+    await reader.read("second", onRecognize);
+    expect(onRecognize).toHaveBeenCalledTimes(2);
     expect(fake.create).toHaveBeenCalledTimes(1);
     reader.close();
     expect(fake.terminate).toHaveBeenCalledTimes(1);

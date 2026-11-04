@@ -12,7 +12,8 @@ export const GUIDANCE = {
   up: "Move the product slightly up.",
   down: "Move the product slightly down.",
   center: "Center the product in the camera.",
-  ready: "Good position. Reading the label.",
+  ready: "Frame is steady. Looking for a barcode or readable label.",
+  noLabel: "I could not find a readable barcode or product label. Place the product label inside the guide.",
   unavailable: "Camera guidance is unavailable. Use Read label with OCR or enter a barcode.",
 } as const;
 export type FrameMetrics = {

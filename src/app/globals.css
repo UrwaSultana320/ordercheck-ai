@@ -654,6 +654,10 @@ footer span {
 .voice-order-platform { padding: .6rem 0; margin: .5rem 0; }
 .voice-order-transcript p { white-space: pre-wrap; overflow-wrap: anywhere; }
 #camera-guidance { font-weight: 600; overflow-wrap: anywhere; }
+.scanner-diagnostics { min-width: 0; max-width: 100%; font-size: .875em; overflow-wrap: anywhere; }
+.scanner-diagnostics h3 { font-size: 1em; }
+.scanner-diagnostics p { margin: .35em 0; }
+.scanner-diagnostics [data-testid="raw-ocr-text"] { white-space: pre-wrap; }
 @media (max-width: 42rem) {
   .voice-order .button-row { flex-direction: column; }
   .voice-order .button-row button { flex: auto; width: 100%; }

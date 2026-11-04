@@ -708,6 +708,17 @@ export default function Home() {
                   </div>
                   <p>Place the front label inside the guide.</p>
                   <p id="camera-guidance">{a.cameraGuidance}</p>
+                  <section className="scanner-diagnostics" aria-label="Physical test diagnostics">
+                    <h3>Physical test diagnostics (temporary)</h3>
+                    <p>Scanner phase: {a.phase}</p>
+                    <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
+                    <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
+                    <p>OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}</p>
+                    <p>OCR attempts: {a.diagnostics.ocrAttempts}</p>
+                    <p>Last OCR confidence: {a.diagnostics.ocrConfidence ?? "none"}</p>
+                    <p>Last OCR text: <span data-testid="raw-ocr-text">{a.diagnostics.ocrText || "none"}</span></p>
+                    <p>Verification result: {a.diagnostics.verification}</p>
+                  </section>
                   <div className="button-row">
                     <button
                       className="primary"

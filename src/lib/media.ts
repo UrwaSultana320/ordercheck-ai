@@ -5,7 +5,7 @@ export class OcrReader {
   private pending: Promise<Worker> | null = null;
   private generation = 0;
   private working = false;
-  async read(source: File | string | HTMLCanvasElement) {
+  async read(source: File | string | HTMLCanvasElement, onRecognize?: () => void) {
     if (this.working) throw new Error("A label is already being read.");
     this.working = true;
     const generation = this.generation;
@@ -18,6 +18,7 @@ export class OcrReader {
       if (generation !== this.generation) throw abortError();
       this.worker = worker;
       const started = performance.now();
+      onRecognize?.();
       const { data } = await worker.recognize(source);
       if (generation !== this.generation) throw abortError();
       return {

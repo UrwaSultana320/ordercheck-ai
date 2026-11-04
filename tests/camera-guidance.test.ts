@@ -116,6 +116,8 @@ describe("readiness and announcements", () => {
     expect(guidance.sample(good).ready).toBe(false);
     expect(guidance.sample(good).ready).toBe(false);
     expect(guidance.sample(good)).toEqual({ ready: true, message: GUIDANCE.ready });
+    expect(GUIDANCE.ready).toBe("Frame is steady. Looking for a barcode or readable label.");
+    expect(GUIDANCE.ready).not.toMatch(/good position|product detected|product found/i);
     guidance.reset();
     expect(guidance.sample(good).ready).toBe(false);
   });

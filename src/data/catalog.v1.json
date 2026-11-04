@@ -1,7 +1,15 @@
 {
   "version": 1,
-  "note": "Illustrative demonstration catalog. Demo codes are not manufacturer GTINs. Add retailer-verified codes before real deliveries.",
+  "note": "Illustrative demonstration catalog. DEMO-prefixed codes are not manufacturer GTINs. LOVE JOJO is a user-supplied physical benchmark with label and barcode details; no package contents have been verified.",
   "products": [
+    {
+      "id": "love-jojo-body-lotion-vitamin-c-500ml",
+      "name": "Body Lotion",
+      "brand": "LOVE JOJO",
+      "variant": "Vitamin C Whitening",
+      "size": "500 ml",
+      "barcodes": ["4897099081562"]
+    },
     {
       "id": "oat-original-1l",
       "name": "Oat drink",

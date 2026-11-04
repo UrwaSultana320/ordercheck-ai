@@ -69,6 +69,15 @@ export function useAssistant(
   const retryId = useRef<string | undefined>(undefined);
   const [cameraGuidance, setCameraGuidance] = useState("");
   const [ocrTime, setOcrTime] = useState<number | null>(null);
+  // Temporary physical-benchmark diagnostics. Preserve worker output verbatim.
+  const [diagnostics, setDiagnostics] = useState({
+    barcode: null as string | null,
+    barcodeKnown: "not checked" as "yes" | "no" | "not checked",
+    ocrAttempts: 0,
+    ocrConfidence: null as number | null,
+    ocrText: null as string | null,
+    verification: "not checked" as "match" | "mismatch" | "unable" | "not checked",
+  });
   const voice = useRef<VoiceController | null>(null),
     stream = useRef<MediaStream | null>(null);
   const controls = useRef<{ stop(): void } | null>(null),
@@ -83,7 +92,7 @@ export function useAssistant(
     mounted = useRef(false);
   const gate = useRef(new PresentationGate());
   const ocrViews = useRef(new AutomaticOcrViews());
-  const ocrRecovery = useRef(false);
+  const ocrRecovery = useRef("");
   const actions = useRef<{
     command(c: Command): void;
     stop(): void;
@@ -125,7 +134,7 @@ export function useAssistant(
     setCamera(false);
     setCameraGuidance("");
     ocrViews.current = new AutomaticOcrViews();
-    ocrRecovery.current = false;
+    ocrRecovery.current = "";
   }
   function stop() {
     releaseCamera();
@@ -347,6 +356,7 @@ export function useAssistant(
           )
             return;
           const code = found.getText();
+          setDiagnostics(d => d.barcode === code ? d : ({ ...d, barcode: code, barcodeKnown: isKnownBarcode(code) ? "yes" : "no" }));
           if (!isKnownBarcode(code)) {
             if (!ocrViews.current.canAttempt() || !gate.current.accept(`unknown:${code}`)) return;
             phaseTo("processing");
@@ -428,7 +438,7 @@ export function useAssistant(
             // Recovery stays visible on the unreadable view until repositioned;
             // otherwise visuals follow state immediately, independently of speech.
             const message = ocrRecovery.current && !ocrViews.current.canAttempt()
-              ? GUIDANCE.unreadable : quality.ready ? "Looking for a barcode or readable label. Present a different view or product." : quality.message;
+              ? ocrRecovery.current : quality.ready ? "Looking for a barcode or readable label. Present a different view or product." : quality.message;
             setCameraGuidance(message);
             const instruction = !guidanceSpeaking && announcements.next(
               message,
@@ -485,6 +495,10 @@ export function useAssistant(
     } catch {
       /* This frame need not contain a readable barcode. */
     }
+    setDiagnostics(d => ({ ...d, barcode: snapshotBarcode ?? null,
+      barcodeKnown: snapshotBarcode ? isKnownBarcode(snapshotBarcode) ? "yes" : "no" : "not checked",
+      verification: "not checked" }));
+    setResult(null);
     ocrBusy.current = true;
     // Live barcode detection can beat the first 700 ms analysis tick. Always
     // mark the captured view so that early unknown codes cannot start a loop.
@@ -493,7 +507,7 @@ export function useAssistant(
     const viewContext = capturedView.getContext("2d")!;
     viewContext.drawImage(v, 0, 0, 96, 72);
     ocrViews.current.mark(analyzeFrame(viewContext.getImageData(0, 0, 96, 72).data, 96, 72).luminance);
-    ocrRecovery.current = false;
+    ocrRecovery.current = "";
     phaseTo("processing");
     if (automatic) setCameraGuidance(GUIDANCE.ready);
     try {
@@ -516,14 +530,21 @@ export function useAssistant(
         await announce(GUIDANCE.ready, 1, true);
         if (epoch !== generation.current || !mounted.current) return;
       } else void announce("Reading a stable label. Stop remains available.", 0, true);
-      const observed = await reader.current.read(canvas);
+      const observed = await reader.current.read(canvas, () => {
+        if (epoch === generation.current && mounted.current)
+          setDiagnostics(d => ({ ...d, ocrAttempts: d.ocrAttempts + 1 }));
+      });
       if (epoch !== generation.current || !mounted.current) return;
       setOcrTime(observed.elapsedMs);
+      setDiagnostics(d => ({ ...d, ocrConfidence: observed.confidence, ocrText: observed.text }));
       if (observed.confidence < 35 || !/[\p{L}\p{N}]{3}/u.test(observed.text)) {
         phaseTo("scanning");
-        ocrRecovery.current = true;
-        setCameraGuidance(GUIDANCE.unreadable);
-        void announce(GUIDANCE.unreadable, 1, true);
+        const instruction = !/[\p{L}\p{N}]{3}/u.test(observed.text) ? GUIDANCE.noLabel : GUIDANCE.unreadable;
+        ocrRecovery.current = instruction;
+        setDiagnostics(d => ({ ...d, verification: "unable" }));
+        setResult({ status: "INCOMPLETE", reason: "LOW_CONFIDENCE", message: instruction });
+        setCameraGuidance(instruction);
+        void announce(instruction, 1, true);
         return;
       }
       const after = document.createElement("canvas");
@@ -533,6 +554,8 @@ export function useAssistant(
         b = after.getContext("2d")!.getImageData(0, 0, 16, 16).data;
       if (a.reduce((n, x, i) => n + Math.abs(x - b[i]), 0) / a.length > 16) {
         phaseTo("scanning");
+        setDiagnostics(d => ({ ...d, verification: "unable" }));
+        setResult({ status: "INCOMPLETE", reason: "MOVED_DURING_READ", message: "Package moved while reading. Hold one label steady and retry." });
         setCameraGuidance("Package moved while reading. Hold one label steady and retry.");
         void announce(
           "Package moved while reading. Hold one label steady and retry.",
@@ -560,7 +583,9 @@ export function useAssistant(
     } catch {
       if (epoch === generation.current) {
         phaseTo("scanning");
-        ocrRecovery.current = true;
+        ocrRecovery.current = GUIDANCE.unreadable;
+        setDiagnostics(d => ({ ...d, verification: "unable" }));
+        setResult({ status: "INCOMPLETE", reason: "OCR_ERROR", message: GUIDANCE.unreadable });
         setCameraGuidance(GUIDANCE.unreadable);
         void announce(GUIDANCE.unreadable, 1, true);
       }
@@ -606,6 +631,11 @@ export function useAssistant(
           items: o.items.filter((i) => i.id === selected.itemId),
         }));
     const verdict = verify(comparable, evidence);
+    setDiagnostics(d => ({ ...d,
+      barcode: evidence.barcode ?? null,
+      barcodeKnown: evidence.barcode ? isKnownBarcode(evidence.barcode) ? "yes" : "no" : "not checked",
+      verification: verdict.status === "MATCH" ? "match" : verdict.status === "MISMATCH" ? "mismatch" : "unable",
+    }));
     // A user-requested retry identifies the unit slot, not the observed product fields.
     if (old?.itemId && !verdict.itemId && !verdict.candidates?.length) {
       verdict.orderId = old.orderId;
@@ -820,6 +850,7 @@ export function useAssistant(
     }
   }
   return {
+    diagnostics,
     cameraGuidance,
     tab,
     navigate,
