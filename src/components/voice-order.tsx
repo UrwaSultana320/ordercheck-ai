@@ -91,7 +91,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
           try { const updated = correctOrder(draft, target, text); setCandidate(updated); setEditing(false); void review(updated); }
           catch { setStatus("Could not apply that correction. Use the field controls."); }
         } else if (draft) {
-          if (command === "confirm") persist(draft);
+          if (command === "confirm") persist(draft, true);
           else if (command === "change" || command.startsWith("change ")) {
             const match = command.match(/^change (platform|name|quantity|size|color|flavour|type|variant|brand)(?: (?:of |for )?product (\d+))?$/);
             const chosen: Correction = match ? match[1] === "platform" ? { field: "platform" } : { index: Number(match[2] ?? 1) - 1, field: match[1] as Exclude<Correction["field"], "platform"> } : (draft.unresolved[0] ?? { index: 0, field: "name" });
@@ -124,8 +124,19 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     await announce(prompt, voice);
     if (epoch.current === token && voice && consent) listen("correction", draft, target);
   }
-  function persist(draft: OrderCandidate) {
-    try { const order = confirmOrder(draft, true, dictated.current ? "voice" : "manual"); cancelListening(); finished.current = true; save(order, spoken.current); }
+  function persist(draft: OrderCandidate, spokenConfirm = false) {
+    if (!hasRequiredQuantity(draft)) {
+      const index = draft.items.findIndex(item => !hasRequiredQuantity({ ...draft, items: [item] }));
+      const message = `I still need the quantity for product ${index + 1} before I can save this order.`;
+      setStatus(message); void announce(message, spokenConfirm); return;
+    }
+    if (spokenConfirm) { draft = confirmCurrentDetails(draft); setCandidate(draft); }
+    try {
+      const order = confirmOrder(draft, true, dictated.current ? "voice" : "manual");
+      cancelListening();
+      finished.current = true;
+      save(order, spokenConfirm);
+    }
     catch { setStatus("Use Change to confirm uncertain fields. Names must be at most 160 characters, platforms 120, brands and variants 100, and sizes 60."); if (draft.unresolved[0]) void change(draft, draft.unresolved[0]); }
   }
   return <section className="panel" aria-labelledby="voice-order-heading">

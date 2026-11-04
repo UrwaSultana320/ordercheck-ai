@@ -168,3 +168,16 @@ export async function readImport(
     reader.close();
   }
 }
+
+// Ideal constraints permit lower-resolution devices to negotiate a usable stream.
+export const deliveryCameraConstraints: MediaStreamConstraints = {
+  video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+  audio: false,
+};
+export async function focusCamera(track?: MediaStreamTrack) {
+  try {
+    const capabilities = track?.getCapabilities?.() as (MediaTrackCapabilities & { focusMode?: string[] }) | undefined;
+    if (capabilities?.focusMode?.includes("continuous"))
+      await track?.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] });
+  } catch { /* Optional optics controls must never prevent scanning. */ }
+}

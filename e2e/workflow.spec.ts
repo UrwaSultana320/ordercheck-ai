@@ -139,10 +139,11 @@ test("no general narration, no-order start, spoken camera denial and unsupported
   expect(await page.evaluate(() => (window as unknown as { __cameraSpeech?: string[] }).__cameraSpeech ?? [])).toEqual([]);
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
-    "Camera permission denied",
+    "Camera permission was not granted.",
   );
   expect(await page.evaluate(() => (window as unknown as { __cameraSpeech: string[] }).__cameraSpeech)).toEqual([
-    "Camera permission denied Allow camera access or enter a barcode or label below.",
+    "Opening the delivery scanner. Your browser may ask for camera permission.",
+    "Camera permission was not granted. Allow camera access and choose Start camera to try again.",
   ]);
   await page.getByLabel("Enter a barcode").fill("DEMO-OAT-ORIGINAL-1L");
   await page

@@ -4,9 +4,13 @@ export const GUIDANCE = {
   dark: "More light is needed.",
   moving: "Hold still.",
   detail: "Move the product closer.",
-  clipped: "Move the product farther away.",
+  clipped: "Move the product slightly farther away.",
   unreadable: "I could not read the label. Slowly rotate the product and hold it steady.",
-  blur: "Hold the product steady.",
+  blur: "Hold the product steady while the camera focuses.",
+  left: "Move the product slightly left.",
+  right: "Move the product slightly right.",
+  up: "Move the product slightly up.",
+  down: "Move the product slightly down.",
   center: "Center the product in the camera.",
   ready: "Good position. Reading the label.",
   unavailable: "Camera guidance is unavailable. Use Read label with OCR or enter a barcode.",
@@ -20,6 +24,8 @@ export type FrameMetrics = {
   borderEdgeDensity: number;
   borderShare: number;
   sharpness: number;
+  broadBorderDensity?: number;
+  broadCentralDensity?: number;
   centerShare: number;
   centroidX: number;
   centroidY: number;
@@ -45,7 +51,7 @@ export function analyzeFrame(
   }
   let edges = 0, weight = 0, center = 0, weightedX = 0, weightedY = 0;
   let centralEdges = 0, centralCount = 0, borderEdges = 0, borderCount = 0, borderWeight = 0;
-  let laplace = 0, laplaceSquared = 0;
+  let laplace = 0, laplaceSquared = 0, broadBorder = 0, broadCenter = 0;
   const count = (width - 2) * (height - 2);
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
@@ -59,6 +65,7 @@ export function analyzeFrame(
         Math.abs(luminance[i + width] - luminance[i - width]);
       const lap = 4 * luminance[i] - luminance[i - 1] - luminance[i + 1] -
         luminance[i - width] - luminance[i + width];
+      if (edge > 8) { if (border) broadBorder++; if (central) broadCenter++; }
       laplace += lap;
       laplaceSquared += lap * lap;
       // Ignore weak noise; cap contrast so a single boundary cannot dominate.
@@ -81,6 +88,8 @@ export function analyzeFrame(
     centralEdgeDensity: centralEdges / Math.max(1, centralCount),
     borderEdgeDensity: borderEdges / Math.max(1, borderCount),
     borderShare: weight ? borderWeight / weight : 0,
+    broadBorderDensity: broadBorder / Math.max(1, borderCount),
+    broadCentralDensity: broadCenter / Math.max(1, centralCount),
     sharpness: Math.max(0, laplaceSquared / count - (laplace / count) ** 2),
     centerShare: weight ? center / weight : 0,
     centroidX: weight ? weightedX / weight : 0.5,
@@ -95,6 +104,11 @@ export function frameGuidance(m: FrameMetrics): string | null {
   // displaced patch instead needs centering. These are not distance estimates.
   if (m.borderEdgeDensity > 0.22 && m.borderShare > 0.32 && m.centralEdgeDensity > 0.12)
     return GUIDANCE.clipped;
+  // Low-frequency detail survives defocus: require widespread border AND
+  // central content, acceptable light and stability; blur alone says focus.
+  if (m.sharpness < 55 && (m.broadBorderDensity ?? m.borderEdgeDensity) > 0.28 &&
+    (m.broadCentralDensity ?? m.centralEdgeDensity) > 0.16) return GUIDANCE.clipped;
+  if (m.sharpness < 55) return GUIDANCE.blur;
   if (m.edgeDensity < 0.018 || (m.centralEdgeDensity < 0.045 && m.edgeDensity < 0.04))
     return GUIDANCE.detail;
   // Only suggest centering when abundant detail is strongly displaced and the
@@ -102,8 +116,14 @@ export function frameGuidance(m: FrameMetrics): string | null {
   // balanced on both sides). Background texture can still fool this heuristic.
   if (m.edgeDensity > 0.045 && m.centerShare < 0.08 &&
     (Math.abs(m.centroidX - 0.5) > 0.23 || Math.abs(m.centroidY - 0.5) > 0.23 || m.centerShare < 0.03))
-    return GUIDANCE.center;
-  if (m.sharpness < 55) return GUIDANCE.blur;
+    {
+      const dx = m.centroidX - 0.5, dy = m.centroidY - 0.5;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) > 0.23) {
+        if (Math.abs(dx) > Math.abs(dy) + 0.08) return dx > 0 ? GUIDANCE.left : GUIDANCE.right;
+        if (Math.abs(dy) > Math.abs(dx) + 0.08) return dy > 0 ? GUIDANCE.up : GUIDANCE.down;
+      }
+      return GUIDANCE.center;
+    }
   return null;
 }
 export class CameraGuidance {
@@ -114,9 +134,11 @@ export class CameraGuidance {
   sample(metrics: FrameMetrics) {
     const problem = frameGuidance(metrics);
     this.good = problem ? 0 : this.good + 1;
-    // Require two samples to enter/leave a distance instruction. Never switch
-    // closer/farther on a single fluctuating sample; bad frames still block OCR.
-    const distance = problem === GUIDANCE.detail || problem === GUIDANCE.clipped ? problem : "";
+    // Distance and direction both require two consistent samples; a noisy
+    // opposite sample retains the prior instruction and still blocks capture.
+    const positioning = [GUIDANCE.detail, GUIDANCE.clipped, GUIDANCE.left,
+      GUIDANCE.right, GUIDANCE.up, GUIDANCE.down, GUIDANCE.center];
+    const distance = positioning.some(message => message === problem) ? problem ?? "" : "";
     if (distance !== this.candidate) { this.candidate = distance; this.samples = 0; }
     this.samples++;
     if (this.samples >= 2) this.distance = distance;

@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { readImport, OcrReader } from "../src/lib/media";
+import { readImport, OcrReader, focusCamera, deliveryCameraConstraints } from "../src/lib/media";
 const fake = vi.hoisted(() => ({
   recognize: vi.fn(),
   terminate: vi.fn().mockResolvedValue(undefined),
@@ -84,5 +84,26 @@ describe("bounded media processing (mocked OCR)", () => {
     reader.close();
     finish({ data: { text: "stale package", confidence: 99 } });
     await rejection;
+  });
+});
+
+describe("mobile camera optics", () => {
+  it("requests a rear camera and useful resolution as ideals", () => {
+    expect(deliveryCameraConstraints).toEqual({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  });
+  it("applies continuous focus only when offered by the track", async () => {
+    const applyConstraints = vi.fn().mockResolvedValue(undefined);
+    const track = (focusMode?: string[]) => ({ getCapabilities: () => ({ focusMode }), applyConstraints }) as unknown as MediaStreamTrack;
+    await focusCamera(track(["manual"]));
+    await focusCamera(track());
+    expect(applyConstraints).not.toHaveBeenCalled();
+    await focusCamera(track(["continuous", "manual"]));
+    expect(applyConstraints).toHaveBeenCalledExactlyOnceWith({ advanced: [{ focusMode: "continuous" }] });
+  });
+  it("tolerates missing, throwing, and rejected capability controls", async () => {
+    await expect(focusCamera()).resolves.toBeUndefined();
+    await expect(focusCamera({} as MediaStreamTrack)).resolves.toBeUndefined();
+    await expect(focusCamera({ getCapabilities: () => { throw new Error("unsupported"); } } as unknown as MediaStreamTrack)).resolves.toBeUndefined();
+    await expect(focusCamera({ getCapabilities: () => ({ focusMode: ["continuous"] }), applyConstraints: () => Promise.reject(new Error("unsupported")) } as unknown as MediaStreamTrack)).resolves.toBeUndefined();
   });
 });

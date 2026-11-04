@@ -12,7 +12,7 @@ import {
   type Verdict,
   type Attempt,
 } from "./engine";
-import { OcrReader } from "./media";
+import { deliveryCameraConstraints, focusCamera, OcrReader } from "./media";
 import { analyzeFrame, AutomaticOcrViews, CameraGuidance, frameGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
 import { orderStorage } from "./order-storage";
 import { newId } from "./id";
@@ -283,7 +283,7 @@ export function useAssistant(
       );
     }
   }
-  async function start() {
+  async function start(spokenConfirm = false) {
     if (!ready) return;
     if (!dataRef.current.orders.length) {
       navigate("orders");
@@ -294,13 +294,14 @@ export function useAssistant(
       return;
     }
     navigate("scan");
-    void announce(
-      `Welcome. ${progress(dataRef.current).waiting} orders waiting to be checked. Camera is requested only for scanning. Put the phone on a stable support, rear camera toward one package about 20 centimetres away. Rotate the package slowly.`,
-    );
+    const opening = announce(spokenConfirm
+      ? "Order confirmed and saved. Opening the delivery scanner. Your browser may ask for camera permission."
+      : "Opening the delivery scanner. Your browser may ask for camera permission.", 1, true);
     const intent = ++generation.current;
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => resolve()),
     );
+    await opening;
     if (mounted.current && intent === generation.current) await startCamera();
   }
   async function startCamera() {
@@ -314,15 +315,13 @@ export function useAssistant(
         throw new Error(
           "Camera requires HTTPS or localhost and a supported browser.",
         );
-      const acquired = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } },
-        audio: false,
-      });
+      const acquired = await navigator.mediaDevices.getUserMedia(deliveryCameraConstraints);
       if (!mounted.current || epoch !== generation.current) {
         acquired.getTracks().forEach((t) => t.stop());
         return;
       }
       stream.current = acquired;
+      await focusCamera(acquired.getVideoTracks()[0]);
       const { BrowserMultiFormatReader } = await import("@zxing/browser");
       if (epoch !== generation.current || !video.current) {
         acquired.getTracks().forEach((t) => t.stop());
@@ -342,14 +341,19 @@ export function useAssistant(
           )
             return;
           const code = found.getText();
-          if (gate.current.accept(`barcode:${code}`))
-            actions.current?.check({
-              barcode: code,
-              captureId: newId(),
-              sessionId: sessionId.current,
-              source: "barcode",
-              presentationId: `${sessionId.current}:${gate.current.epoch}`,
+          if (gate.current.accept(`barcode:${code}`)) {
+            void announce("Barcode detected. Checking this product.", 1, true).then(() => {
+              if (epoch !== generation.current || !mounted.current) return;
+              actions.current?.check({
+                barcode: code,
+                captureId: newId(),
+                sessionId: sessionId.current,
+                source: "barcode",
+                presentationId: `${sessionId.current}:${gate.current.epoch}`,
+              });
             });
+            phaseTo("processing");
+          }
         },
       );
       if (epoch !== generation.current) {
@@ -429,7 +433,9 @@ export function useAssistant(
       if (epoch === generation.current) {
         releaseCamera();
         phaseTo("error");
-        const instruction = `${error instanceof Error ? error.message : "Camera unavailable."} Allow camera access or enter a barcode or label below.`;
+        const instruction = error instanceof DOMException && ["NotAllowedError", "PermissionDeniedError"].includes(error.name)
+          ? "Camera permission was not granted. Allow camera access and choose Start camera to try again."
+          : `${error instanceof Error ? error.message : "Camera unavailable."} Choose Start camera to try again, or enter a barcode or label below.`;
         setCameraGuidance(instruction);
         void announce(instruction, 3, true);
       }
@@ -461,6 +467,13 @@ export function useAssistant(
     phaseTo("processing");
     if (automatic) setCameraGuidance(GUIDANCE.ready);
     try {
+      if (snapshotBarcode) {
+        if (!gate.current.accept(`barcode:${snapshotBarcode}`)) { phaseTo("awaiting-next-item"); return; }
+        await announce("Barcode detected. Checking this product.", 1, true);
+        if (epoch !== generation.current || !mounted.current) return;
+        check({ barcode: snapshotBarcode, source: "barcode", captureId: newId(), sessionId: sessionId.current, presentationId });
+        return;
+      }
       if (automatic) {
         await announce(GUIDANCE.ready, 1, true);
         if (epoch !== generation.current || !mounted.current) return;

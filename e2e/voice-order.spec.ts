@@ -282,8 +282,8 @@ test("server dictation, readback, explicit targeted voice correction and explici
   await expect(page.getByText("500 ml", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Speak response", exact: true }).click();
   await emit(page, "confirm stop recording");
-  await expect(page.getByText("1 saved orders", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "shampoos", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Check your delivery", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toHaveCount(0);
   const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
   expect(saved.orders[0].source).toBe("voice");
   expect(saved.orders[0]).not.toHaveProperty("audio");
@@ -399,4 +399,61 @@ test("voice review reflows with large text and high contrast and passes axe", as
   await review(page, "two blue shirts and one coffee 200 g");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   expect((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze()).violations).toEqual([]);
+});
+
+for (const denied of [false, true]) {
+  test(`spoken Confirm confirms uncertain values, saves and requests camera; denied=${denied}`, async ({ page }) => {
+    await mockSpeech(page);
+    await page.addInitScript(({ denied }) => {
+      const host = window as unknown as { __cameraRequests: MediaStreamConstraints[]; __releaseCamera: () => void };
+      host.__cameraRequests = [];
+      Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async (constraints: MediaStreamConstraints) => {
+        host.__cameraRequests.push(constraints);
+        await new Promise<void>(resolve => { host.__releaseCamera = resolve; });
+        if (denied) throw new DOMException("denied", "NotAllowedError");
+        const canvas = document.createElement("canvas"); canvas.width = 320; canvas.height = 240;
+        canvas.getContext("2d")!.fillRect(0, 0, 320, 240);
+        return canvas.captureStream(10);
+      } });
+    }, { denied });
+    await openVoice(page);
+    await page.getByLabel("Keep orders in this browser tab for this session").check();
+    await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+    await review(page, "one Head and shoulders anti-denture");
+    await expect(page.getByRole("button", { name: "Confirm and save voice order", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Speak response", exact: true }).click();
+    await emit(page, "confirm");
+    await expect(page.getByRole("heading", { name: "Check your delivery", exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests.length)).toBe(1);
+    const before = await page.evaluate(() => ({ speeches: (window as unknown as { __spoken: string[] }).__spoken, saved: JSON.parse(sessionStorage.getItem("ordercheck.v2")!) }));
+    expect(before.saved.orders[0].items[0]).toMatchObject({ name: "Head and shoulders anti-denture", quantity: 1 });
+    expect(before.speeches).toContain("Order confirmed and saved. Opening the delivery scanner. Your browser may ask for camera permission.");
+    expect(before.speeches).not.toContain("Camera started. Hold one product in front of the camera.");
+    expect(await page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests[0])).toEqual({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    await page.evaluate(() => (window as unknown as { __releaseCamera: () => void }).__releaseCamera());
+    if (denied) {
+      await expect(page.getByRole("status")).toContainText("Camera permission was not granted.");
+      await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
+    } else {
+      await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeEnabled();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("Camera started. Hold one product in front of the camera."))).toBe(true);
+      await expect(page.getByText("Place the front label inside the guide.", { exact: true })).toBeVisible();
+      await expect(page.locator(".label-guide")).toBeVisible();
+      await page.getByRole("button", { name: "Stop camera", exact: true }).click();
+    }
+    const fallback = page.getByRole("button", { name: "Start camera", exact: true });
+    await fallback.scrollIntoViewIfNeeded(); await expect(fallback).toBeInViewport();
+    await expect(page.getByLabel("Enter a barcode")).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  });
+}
+test("spoken Confirm speaks the missing product quantity and leaves correction available without saving", async ({ page }) => {
+  await mockSpeech(page); await openVoice(page);
+  await page.getByLabel("Allow order audio transcription", { exact: false }).check();
+  await review(page, "two soaps; Head and shoulders anti-denture");
+  await page.getByRole("button", { name: "Speak response", exact: true }).click(); await emit(page, "confirm");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("I still need the quantity for product 2 before I can save this order."))).toBe(true);
+  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await expect(page.getByLabel("Correct value", { exact: true })).toBeEditable();
 });

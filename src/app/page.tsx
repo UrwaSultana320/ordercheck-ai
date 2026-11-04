@@ -128,6 +128,16 @@ export default function Home() {
       }
     }
   }
+  function saveVoiceOrder(order: Order, spoken: boolean) {
+    a.update({ ...a.data, orders: [...a.data.orders, order] });
+    setComposing(false);
+    setVoiceSaved(!spoken);
+    if (spoken) void a.start(true);
+    else {
+      a.navigate("orders");
+      void a.announce("Order saved in My Orders. Choose Scan this delivery, then Start camera when ready.", 3);
+    }
+  }
   function save() {
     const parsed = orderSchema.safeParse({
       id: editing ?? newId(),
@@ -375,7 +385,7 @@ export default function Home() {
                 <button className="primary" disabled={!a.ready} onClick={openVoiceOrder}>Tell OrderCheck what I ordered</button>
               </div>
               {composing && <VoiceOrder
-                save={(order, spoken) => { a.update({ ...a.data, orders: [...a.data.orders, order] }); setComposing(false); setVoiceSaved(true); a.navigate("orders"); void a.announce("Order saved in My Orders. Choose Scan this delivery, then Start camera when ready.", 3, spoken); }}
+                save={saveVoiceOrder}
                 close={() => { setComposing(false); void a.announce("Order cancelled. Nothing saved."); }}
                 announce={a.speakOrder}
                 stopSpeech={() => a.command("stop speaking")}
@@ -688,6 +698,7 @@ export default function Home() {
                       aria-label="Live rear camera preview"
                       aria-describedby="camera-guidance"
                     />
+                    {a.camera && <div className="label-guide" aria-hidden="true" />}
                     {!a.camera && (
                       <div className="camera-placeholder">
                         <ScanLine size={50} aria-hidden="true" />
@@ -695,6 +706,7 @@ export default function Home() {
                       </div>
                     )}
                   </div>
+                  <p>Place the front label inside the guide.</p>
                   <p id="camera-guidance">{a.cameraGuidance}</p>
                   <div className="button-row">
                     <button

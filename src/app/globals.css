@@ -639,3 +639,5 @@ footer span {
     justify-self: start;
   }
 }
+
+.label-guide { position: absolute; inset: 18% 22%; border: 3px solid #fff; outline: 2px solid #111; border-radius: 12px; pointer-events: none; }

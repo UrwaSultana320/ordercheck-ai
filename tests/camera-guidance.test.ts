@@ -33,7 +33,7 @@ describe("camera frame analysis", () => {
     expect(stable.metrics.motion).toBe(0);
     expect(frameGuidance(stable.metrics)).toBeNull();
     const plain = analyzeFrame(frame(() => 140), 96, 72);
-    expect(frameGuidance(analyzeFrame(frame(() => 140), 96, 72, plain.luminance).metrics)).toBe(GUIDANCE.detail);
+    expect(frameGuidance(analyzeFrame(frame(() => 140), 96, 72, plain.luminance).metrics)).toBe(GUIDANCE.blur);
     expect(frameGuidance({ ...good, sharpness: 20 })).toBe(GUIDANCE.blur);
   });
   it("measures a displaced content centroid, requiring strong evidence for centering", () => {
@@ -41,7 +41,7 @@ describe("camera frame analysis", () => {
     const first = analyzeFrame(side, 96, 72);
     const second = analyzeFrame(side, 96, 72, first.luminance);
     expect(second.metrics.centroidX).toBeLessThan(0.25);
-    expect(frameGuidance(second.metrics)).toBe(GUIDANCE.center);
+    expect(frameGuidance(second.metrics)).toBe(GUIDANCE.right);
     expect(frameGuidance({ ...good, centroidX: 0.1 })).toBeNull();
     expect(frameGuidance({ ...good, centerShare: 0.01 })).toBe(GUIDANCE.center);
     expect(frameGuidance({ ...good, centroidX: 0.1, centerShare: 0.01, edgeDensity: 0.03 })).toBeNull();
@@ -65,7 +65,7 @@ describe("readiness and announcements", () => {
     expect(frameGuidance(close)).toBe(GUIDANCE.clipped);
     expect(frameGuidance({ ...close, brightness: 15, motion: 30 })).toBe(GUIDANCE.dark);
     expect(frameGuidance({ ...far, motion: 30 })).toBe(GUIDANCE.moving);
-    expect(frameGuidance({ ...good, centerShare: 0.01, sharpness: 20 })).toBe(GUIDANCE.center);
+    expect(frameGuidance({ ...good, centerShare: 0.01, sharpness: 20 })).toBe(GUIDANCE.blur);
   });
   it("does not alternate distance instructions for single noisy samples", () => {
     const guidance = new CameraGuidance();
@@ -133,4 +133,37 @@ describe("readiness and announcements", () => {
     expect(speech.next(GUIDANCE.center, 26700)).toBeNull();
     expect(speech.next(GUIDANCE.center, 27400)).toBe(GUIDANCE.center);
   });
+});
+
+it("requires stable blur plus broad framing evidence for farther guidance", () => {
+  const close = { ...good, sharpness: 12, broadBorderDensity: 0.4, broadCentralDensity: 0.3 };
+  const g = new CameraGuidance();
+  expect(g.sample(close).message).toBe(GUIDANCE.moving);
+  expect(g.sample(close).message).toBe(GUIDANCE.clipped);
+  expect(frameGuidance({ ...close, motion: 20 })).toBe(GUIDANCE.moving);
+  expect(frameGuidance({ ...close, brightness: 20 })).toBe(GUIDANCE.dark);
+  expect(frameGuidance({ ...good, sharpness: 12 })).toBe(GUIDANCE.blur);
+  expect(frameGuidance({ ...good, sharpness: 0, edgeDensity: 0, centralEdgeDensity: 0 })).toBe(GUIDANCE.blur);
+});
+it("requires persistent directional evidence and does not alternate on noise", () => {
+  const g = new CameraGuidance();
+  const left = { ...good, centerShare: 0.01, centroidX: 0.85 };
+  const right = { ...left, centroidX: 0.15 };
+  expect(g.sample(left).message).toBe(GUIDANCE.moving);
+  expect(g.sample(left).message).toBe(GUIDANCE.left);
+  expect(g.sample(right).message).toBe(GUIDANCE.left);
+  expect(g.sample(left).message).toBe(GUIDANCE.left);
+  g.sample(right);
+  expect(g.sample(right).message).toBe(GUIDANCE.right);
+  expect(frameGuidance({ ...good, centerShare: 0.01, centroidY: 0.85 })).toBe(GUIDANCE.up);
+  expect(frameGuidance({ ...good, centerShare: 0.01, centroidY: 0.15 })).toBe(GUIDANCE.down);
+});
+
+it("retains broad framing evidence in a smooth defocused synthetic frame", () => {
+  const blurred = frame((x, y) => 140 + 40 * Math.sin(x / 5) + 20 * Math.sin(y / 5));
+  const first = analyzeFrame(blurred, 96, 72);
+  const metrics = analyzeFrame(blurred, 96, 72, first.luminance).metrics;
+  expect(metrics.sharpness).toBeLessThan(55);
+  expect(metrics.broadBorderDensity).toBeGreaterThan(0.28);
+  expect(frameGuidance(metrics)).toBe(GUIDANCE.clipped);
 });

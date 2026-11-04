@@ -1,12 +1,13 @@
+import { QRCodeWriter, BarcodeFormat } from "@zxing/library";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 // Synthetic canvas stream exercises wiring and cleanup, not physical optics.
-async function installCamera(page: Page, speech = true) {
-  await page.addInitScript(({ speech }) => {
+async function installCamera(page: Page, speech = true, quantity = 1) {
+  await page.addInitScript(({ speech, quantity }) => {
     sessionStorage.setItem("ordercheck.v2", JSON.stringify({ orders: [{
       id: "camera-test", label: "Camera test", source: "purchase", items: [{
-        id: "item", name: "Oat drink", brand: "Everyday", variant: "Original", size: "1 L", quantity: 1, verified: 0,
+        id: "item", name: "Oat drink", brand: "Everyday", variant: "Original", size: "1 L", quantity, verified: 0,
       }],
     }], attempts: [] }));
     const host = window as unknown as {
@@ -79,7 +80,7 @@ async function installCamera(page: Page, speech = true) {
       }
       return stream;
     } });
-  }, { speech });
+  }, { speech, quantity });
 }
 
 test("synthetic dark camera guidance is accessible, quiet, and preserves manual OCR and cleanup", async ({ page }) => {
@@ -92,6 +93,7 @@ test("synthetic dark camera guidance is accessible, quiet, and preserves manual 
   await expect(status).toContainText("More light is needed.", { timeout: 20000 });
   await expect(page.locator("#camera-guidance")).toHaveText("More light is needed.");
   expect(await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.map(s => s.text))).toEqual([
+    "Opening the delivery scanner. Your browser may ask for camera permission.",
     "Camera started. Hold one product in front of the camera.", "More light is needed.",
   ]);
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeEnabled();
@@ -132,10 +134,10 @@ test("visual transitions bypass speech throttling; failed OCR retries only a new
   await expect(page.getByRole("status")).toContainText("More light is needed.");
   const darkAt = await page.evaluate(() => (window as unknown as { __speeches: { text: string; at: number }[] }).__speeches.find(s => s.text === "More light is needed.")!.at);
   await page.evaluate(() => { (window as unknown as { __plain: boolean }).__plain = true; });
-  await expect(page.locator("#camera-guidance")).toHaveText("Move the product closer.", { timeout: 4000 });
+  await expect(page.locator("#camera-guidance")).toHaveText("Hold the product steady while the camera focuses.", { timeout: 4000 });
   const transition = await page.evaluate(() => ({ now: performance.now(), speeches: (window as unknown as { __speeches: { text: string; at: number }[] }).__speeches }));
   expect(transition.now - darkAt).toBeLessThan(5000);
-  expect(transition.speeches.some(s => s.text === "Move the product closer.")).toBe(false);
+  expect(transition.speeches.some(s => s.text === "Hold the product steady while the camera focuses.")).toBe(false);
   await page.evaluate(() => { (window as unknown as { __cameraPattern: boolean }).__cameraPattern = true; });
   await expect(page.locator("#camera-guidance")).toHaveText("I could not read the label. Slowly rotate the product and hold it steady.", { timeout: 15000 });
   const reads = () => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads);
@@ -164,5 +166,42 @@ test("camera instructions remain visible without speech synthesis", async ({ pag
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
   await expect(page.locator("#camera-guidance")).toHaveText("More light is needed.");
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Stop camera", exact: true }).click();
+});
+
+test("stable high-quality snapshot barcode uses real ZXing, skips OCR and deduplicates the same view", async ({ page }) => {
+  await installCamera(page, true, 2);
+  const matrix = new QRCodeWriter().encode("DEMO-OAT-ORIGINAL-1L", BarcodeFormat.QR_CODE, 200, 200, new Map());
+  const points: [number, number][] = [];
+  for (let y = 0; y < 200; y++) for (let x = 0; x < 200; x++) if (matrix.get(x, y)) points.push([x, y]);
+  await page.addInitScript(({ points }) => {
+    const host = window as unknown as { __snapshotReads: number; __cameraPattern: boolean };
+    host.__snapshotReads = 0;
+    const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function(...args: unknown[]) {
+      Reflect.apply(drawImage, this, args);
+      // App snapshots scale explicitly (five args). Live ZXing draws with three
+      // args; the tiny guidance frames stay untouched. Only the snapshot sees QR.
+      if (args.length === 5 && this.canvas.width >= 320) {
+        host.__snapshotReads++;
+        this.fillStyle = "white"; this.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        this.fillStyle = "black";
+        for (const [x, y] of points) this.fillRect(x + 60, y + 20, 1, 1);
+      }
+    };
+  }, { points });
+  await page.goto("/");
+  await page.evaluate(() => { (window as unknown as { __cameraPattern: boolean }).__cameraPattern = true; });
+  await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __snapshotReads: number }).__snapshotReads), { timeout: 15000 }).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Barcode detected. Checking this product."))).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
+  await expect(page.getByRole("status")).toContainText(/match/i);
+  await page.waitForTimeout(3500);
+  expect(await page.evaluate(() => (window as unknown as { __snapshotReads: number }).__snapshotReads)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
+  const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
+  expect(saved.orders[0].items[0].verified).toBe(1);
+  expect(saved.attempts).toHaveLength(1);
   await page.getByRole("button", { name: "Stop camera", exact: true }).click();
 });
