@@ -711,6 +711,8 @@ export default function Home() {
                   <section className="scanner-diagnostics" aria-label="Physical test diagnostics">
                     <h3>Physical test diagnostics (temporary)</h3>
                     <p>Scanner phase: {a.phase}</p>
+                    <p>Live barcode attempts: {a.diagnostics.liveBarcodeAttempts}</p>
+                    <p>Last barcode decode status: {a.diagnostics.lastBarcodeDecodeStatus}</p>
                     <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
                     <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
                     <p>OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}</p>

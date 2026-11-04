@@ -1,4 +1,5 @@
 "use client";
+import type { DecodeHintType as DecodeHint, BarcodeFormat as RetailFormat } from "@zxing/library";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   verify,
@@ -73,6 +74,8 @@ export function useAssistant(
   const [diagnostics, setDiagnostics] = useState({
     barcode: null as string | null,
     barcodeKnown: "not checked" as "yes" | "no" | "not checked",
+    liveBarcodeAttempts: 0,
+    lastBarcodeDecodeStatus: "searching" as "searching" | "detected",
     ocrAttempts: 0,
     ocrConfidence: null as number | null,
     ocrText: null as string | null,
@@ -337,17 +340,51 @@ export function useAssistant(
       }
       stream.current = acquired;
       await focusCamera(acquired.getVideoTracks()[0]);
-      const { BrowserMultiFormatReader } = await import("@zxing/browser");
+      const { BrowserMultiFormatReader, HTMLCanvasElementLuminanceSource } = await import("@zxing/browser");
+      const { DecodeHintType, BarcodeFormat, BinaryBitmap, HybridBinarizer } = await import("@zxing/library");
       if (epoch !== generation.current || !video.current) {
         acquired.getTracks().forEach((t) => t.stop());
         return;
       }
-      const decoder = new BrowserMultiFormatReader();
-      snapshotDecoder.current = decoder;
+      const hints = new Map<DecodeHint, boolean | RetailFormat[]>([
+        [DecodeHintType.TRY_HARDER, true],
+        [DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.EAN_13, BarcodeFormat.EAN_8,
+          BarcodeFormat.UPC_A, BarcodeFormat.UPC_E,
+        ]],
+      ]);
+      const decoder = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 150,
+        delayBetweenScanSuccess: 150,
+      });
+      // @zxing/browser 0.2.1 rotates its buffer but retains the old width/height.
+      // Give OneDReader's TRY_HARDER retry a source with the rotated dimensions.
+      decoder.decodeFromCanvas = (canvas) => {
+        const source = new HTMLCanvasElementLuminanceSource(canvas);
+        source.rotateCounterClockwise = () => {
+          const rotated = document.createElement("canvas");
+          rotated.width = canvas.height;
+          rotated.height = canvas.width;
+          const context = rotated.getContext("2d", { willReadFrequently: true });
+          if (!context) throw new Error("Could not create barcode rotation context.");
+          context.translate(0, canvas.width);
+          context.rotate(-Math.PI / 2);
+          context.drawImage(canvas, 0, 0);
+          return new HTMLCanvasElementLuminanceSource(rotated);
+        };
+        return decoder.decodeBitmap(new BinaryBitmap(new HybridBinarizer(source)));
+      };
+      // Snapshot/OCR decoding retains its existing formats and behavior.
+      snapshotDecoder.current = new BrowserMultiFormatReader();
+      setDiagnostics(d => ({ ...d, liveBarcodeAttempts: 0, lastBarcodeDecodeStatus: "searching" }));
       const control = await decoder.decodeFromStream(
         acquired,
         video.current,
         (found) => {
+          if (epoch !== generation.current || !mounted.current) return;
+          // ZXing calls back after each actual attempt, including NotFound.
+          setDiagnostics(d => ({ ...d, liveBarcodeAttempts: d.liveBarcodeAttempts + 1,
+            lastBarcodeDecodeStatus: found ? "detected" : "searching" }));
           if (
             !found ||
             epoch !== generation.current ||

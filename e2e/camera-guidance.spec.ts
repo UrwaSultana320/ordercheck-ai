@@ -2,6 +2,21 @@ import { QRCodeWriter, BarcodeFormat } from "@zxing/library";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
+function eanPoints(code: string): [number, number][] {
+  // Synthetic EAN-13 bars with quiet zones. No decoder mock.
+  const parity = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG", "LGGLLG", "LGGGLL", "LGLGLG", "LGLGGL", "LGGLGL"];
+  const left = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
+  const inverse = (bits: string) => [...bits].map(b => b === "0" ? "1" : "0").join("");
+  const bits = "101" + [...code.slice(1, 7)].map((digit, i) => {
+    const pattern = left[Number(digit)];
+    return parity[Number(code[0])][i] === "L" ? pattern : inverse([...pattern].reverse().join(""));
+  }).join("") + "01010" + [...code.slice(7)].map(digit => inverse(left[Number(digit)])).join("") + "101";
+  const points: [number, number][] = [];
+  for (let x = 0; x < bits.length; x++) if (bits[x] === "1")
+    for (let y = 40; y < 160; y++) for (let dx = 0; dx < 2; dx++) points.push([x * 2 + dx, y]);
+  return points;
+}
+
 // Synthetic canvas stream exercises wiring and cleanup, not physical optics.
 async function installCamera(page: Page, speech = true, quantity = 1, benchmark = false) {
   await page.addInitScript(({ speech, quantity, benchmark }) => {
@@ -219,9 +234,7 @@ test("stable high-quality snapshot barcode uses real ZXing, skips OCR and dedupl
 
 test("unknown live barcode automatically reads label on the same presentation before finalizing", async ({ page }) => {
   await installCamera(page, true, 2);
-  const matrix = new QRCodeWriter().encode("UNKNOWN-REAL-PACKAGE", BarcodeFormat.QR_CODE, 200, 200, new Map());
-  const points: [number, number][] = [];
-  for (let y = 0; y < 200; y++) for (let x = 0; x < 200; x++) if (matrix.get(x, y)) points.push([x, y]);
+  const points = eanPoints("5901234123457");
   await page.goto("/");
   await page.evaluate(points => {
     const host = window as unknown as { __barcodePoints: [number, number][]; __ocrText: string; __ocrDelay: number };
@@ -232,12 +245,12 @@ test("unknown live barcode automatically reads label on the same presentation be
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads), { timeout: 20000 }).toBe(1);
   await expect(page.getByRole("region", { name: "Physical test diagnostics" })).toContainText("Barcode known: no");
-  await expect(page.getByRole("region", { name: "Physical test diagnostics" })).toContainText("Barcode detected: UNKNOWN-REAL-PACKAGE");
+  await expect(page.getByRole("region", { name: "Physical test diagnostics" })).toContainText("Barcode detected: 5901234123457");
   expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts)).toHaveLength(0);
   await expect(page.locator("#camera-guidance")).toHaveText("Reading label.");
   await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts.length)).toBe(1);
   const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
-  expect(saved.attempts[0].observation).toMatchObject({ barcode: "UNKNOWN-REAL-PACKAGE", source: "ocr", text: "Everyday Oat drink Original 1 L" });
+  expect(saved.attempts[0].observation).toMatchObject({ barcode: "5901234123457", source: "ocr", text: "Everyday Oat drink Original 1 L" });
   expect(saved.attempts[0].status).toBe("MATCH");
   expect(saved.orders[0].items[0].verified).toBe(1);
   await expect(page.locator("#camera-guidance")).not.toBeEmpty();
@@ -259,31 +272,39 @@ test("bounded imperfect view attempts once then keeps rotation status until the 
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(1);
 });
 
-test("benchmark EAN-13 is decoded by real ZXing, diagnosed and verified without OCR", async ({ page }) => {
+for (const rotated of [false, true]) test(`benchmark EAN-13 ${rotated ? "rotated 90 degrees" : "horizontal"} is decoded live by real ZXing and verified without OCR`, async ({ page }) => {
   await installCamera(page, true, 1, true);
-  // Synthetic EAN-13 bars for 4897099081562, with quiet zones. No decoder mock.
-  const left = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
-  const inverse = (bits: string) => [...bits].map(b => b === "0" ? "1" : "0").join("");
   const code = "4897099081562";
-  const bits = "101" + [...code.slice(1, 7)].map((digit, i) => {
-    const pattern = left[Number(digit)];
-    return "LGLLGG"[i] === "L" ? pattern : inverse([...pattern].reverse().join(""));
-  }).join("") + "01010" + [...code.slice(7)].map(digit => inverse(left[Number(digit)])).join("") + "101";
-  const points: [number, number][] = [];
-  for (let x = 0; x < bits.length; x++) if (bits[x] === "1")
-    for (let y = 40; y < 160; y++) for (let dx = 0; dx < 2; dx++) points.push([x * 2 + dx, y]);
+  const points = eanPoints(code).map(([x, y]): [number, number] => rotated ? [199 - y, x] : [x, y]);
   await page.goto("/");
-  await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
-  await expect(diagnostics).toContainText("Barcode detected: 4897099081562", { timeout: 20000 });
+  await expect(diagnostics).toContainText("Last barcode decode status: searching");
+  await expect.poll(async () => Number((await diagnostics.getByText(/^Live barcode attempts:/).innerText()).split(": ")[1])).toBeGreaterThan(1);
+  await expect(diagnostics).toContainText("OCR attempts: 0");
+  // Keep guidance dark/unready and snapshots blank. Only live ZXing sees bars.
+  await page.evaluate(points => {
+    const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function(...args: unknown[]) {
+      Reflect.apply(drawImage, this, args);
+      if (args.length === 3 && this.canvas.width === 320) {
+        this.fillStyle = "white"; this.fillRect(0, 0, 320, 240);
+        this.fillStyle = "black";
+        for (const [x, y] of points) this.fillRect(x + 60, y + 20, 1, 1);
+      }
+    };
+  }, points);
+  await expect(diagnostics).toContainText("Barcode detected: 4897099081562", { timeout: 4000 });
+  await expect(diagnostics).toContainText("Last barcode decode status: detected");
   await expect(diagnostics).toContainText("Barcode known: yes");
   await expect(diagnostics).toContainText("Verification result: match");
   await expect(diagnostics).toContainText("OCR attempts: 0");
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
   const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
   expect(saved.orders[0].items[0].verified).toBe(1);
-  expect(saved.attempts[0].observation.barcode).toBe(code);
+  expect(saved.attempts).toHaveLength(1);
+  expect(saved.attempts[0]).toMatchObject({ status: "MATCH", identity: "love-jojo-body-lotion-vitamin-c-500ml", observation: { barcode: code, source: "barcode" } });
+  expect(await page.evaluate(() => (window as unknown as { __cameraRequests: number }).__cameraRequests)).toBe(1);
 });
 
 for (const confidence of [95, 70, 20]) test(`front-label raw OCR diagnostics preserve worker output at confidence ${confidence}`, async ({ page }) => {
@@ -334,15 +355,13 @@ test("stable empty view reports no readable evidence, speaks recovery and never 
 
 test("unknown decoded barcode with empty OCR retains existing rotation recovery", async ({ page }) => {
   await installCamera(page, true, 1, true);
-  const matrix = new QRCodeWriter().encode("UNKNOWN-REAL-PACKAGE", BarcodeFormat.QR_CODE, 200, 200, new Map());
-  const points: [number, number][] = [];
-  for (let y = 0; y < 200; y++) for (let x = 0; x < 200; x++) if (matrix.get(x, y)) points.push([x, y]);
+  const points = eanPoints("5901234123457");
   await page.goto("/");
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
   await expect(page.locator("#camera-guidance")).toHaveText("I could not read this side. Slowly rotate the product.", { timeout: 20000 });
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
-  await expect(diagnostics).toContainText("Barcode detected: UNKNOWN-REAL-PACKAGE");
+  await expect(diagnostics).toContainText("Barcode detected: 5901234123457");
   await expect(diagnostics).toContainText("Barcode known: no");
   await expect(diagnostics).toContainText("OCR attempts: 1");
   const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
