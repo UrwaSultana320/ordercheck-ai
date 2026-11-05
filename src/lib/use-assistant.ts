@@ -99,7 +99,7 @@ export function useAssistant(
   const ocrViews = useRef(new AutomaticOcrViews());
   const ocrRecovery = useRef("");
   const actions = useRef<{
-    command(c: Command): void;
+    command(c: Command): void | Promise<void>;
     stop(): void;
     check(e: Evidence): void;
     ocr(automatic?: boolean): Promise<void>;
@@ -238,9 +238,11 @@ export function useAssistant(
       if (phaseRef.current !== "requesting-permission") actions.current?.stop();
     };
     const pause = () => {
-      if (document.visibilityState !== "visible") interrupt();
+      if (document.visibilityState !== "visible") { voice.current?.stop(); interrupt(); }
     };
-    const blur = interrupt;
+    const blur = () => {
+      if (document.visibilityState !== "visible") { voice.current?.stop(); interrupt(); }
+    };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") actions.current?.stop();
     };
@@ -324,7 +326,8 @@ export function useAssistant(
     if (mounted.current && intent === generation.current) await startCamera();
   }
   async function startCamera() {
-    if (stream.current || phaseRef.current === "requesting-permission") return;
+    if (stream.current) { voice.current?.startListening(false); return; }
+    if (phaseRef.current === "requesting-permission") return;
     const epoch = ++generation.current;
     sessionId.current = newId();
     gate.current = new PresentationGate();
@@ -433,6 +436,7 @@ export function useAssistant(
       reader.current = new OcrReader();
       setCamera(true);
       phaseTo("scanning");
+      voice.current?.startListening(false);
       setCameraGuidance(GUIDANCE.started);
       const analysis = document.createElement("canvas");
       analysis.width = 96;
@@ -740,7 +744,7 @@ export function useAssistant(
         "Is this another physical unit? Say Yes another unit, or No retry this unit.",
         3, true,
       ).then(() => {
-        if (mounted.current && epoch === generation.current && phaseRef.current === "needs-clarification") voice.current?.startListening();
+        if (mounted.current && epoch === generation.current && phaseRef.current === "needs-clarification") voice.current?.startListening(false);
       });
       return;
     }
@@ -793,12 +797,12 @@ export function useAssistant(
         phaseRef.current === "announcing-result"
       ) {
         phaseTo("awaiting-next-item");
-        voice.current?.startListening();
+        voice.current?.startListening(false);
       }
     });
   }
   function nextItem() {
-    voice.current?.stopListening();
+    voice.current?.startListening(false);
     pendingTo(null);
     retryId.current = undefined;
     gate.current.next();
@@ -811,7 +815,7 @@ export function useAssistant(
     );
   }
   function retry() {
-    voice.current?.stopListening();
+    voice.current?.startListening(false);
     const p = pendingRef.current;
     const last = [...dataRef.current.attempts]
       .reverse()
@@ -834,7 +838,7 @@ export function useAssistant(
     );
   }
   function finishChecking() {
-    voice.current?.stopListening();
+    voice.current?.startListening(false);
     const report = deliveryReport(dataRef.current);
     releaseCamera();
     pendingTo(null);
@@ -871,8 +875,7 @@ export function useAssistant(
         if (pendingRef.current?.another) retry();
         break;
       case "start":
-        void start();
-        break;
+        return start();
       case "stop":
         stop();
         break;
@@ -887,7 +890,7 @@ export function useAssistant(
             : messageRef.current,
           3, true,
         ).then(() => {
-          if (mounted.current && phaseRef.current === "awaiting-next-item") voice.current?.startListening();
+          if (mounted.current && phaseRef.current === "awaiting-next-item") voice.current?.startListening(false);
         });
         break;
       case "finish":
@@ -902,7 +905,7 @@ export function useAssistant(
       case "help":
         navigate("help");
         void announce(
-          "Commands: Start, Stop, Repeat, Next, Finish, Help, Retry, Read my orders, Read the result again, Go back, Stop speaking. Named controls offer equivalent actions. Recognition pauses during app speech.",
+          "Commands: Start, Stop, Repeat, Next, Finish, Help, Retry, Read my orders, Read the result again, Go back, Stop speaking. Named controls offer equivalent actions. During speech, say Stop speaking to interrupt or Stop to end the session.",
         );
         break;
       case "read my orders":

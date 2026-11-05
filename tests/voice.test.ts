@@ -1,3 +1,4 @@
+import { commandFrom } from "../src/lib/session";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VoiceController, type Recognition } from "../src/lib/voice";
 class FakeRecognition implements Recognition {
@@ -31,7 +32,7 @@ function fixture(supported = true) {
   FakeRecognition.instances = [];
   const speeches: SpeechSynthesisUtterance[] = [];
   const events = {
-    command: vi.fn(),
+    command: vi.fn<(command: import("../src/lib/session").Command) => void | Promise<void>>(),
     listening: vi.fn(),
     speaking: vi.fn(),
     error: vi.fn(),
@@ -52,107 +53,173 @@ function fixture(supported = true) {
 afterEach(() => {
   vi.useRealTimers();
 });
-describe("speech and command coordination (mocked services)", () => {
-  it("defaults to no app TTS and reports unsupported recognition", async () => {
+describe("persistent command lifecycle (mocked browser services)", () => {
+  it("reports unsupported commands once, with narration disabled", async () => {
     const f = fixture(false);
     await f.controller.say("Welcome");
+    f.controller.startListening();
+    f.controller.startListening(false);
     expect(f.speeches).toHaveLength(0);
+    expect(f.events.error).toHaveBeenCalledExactlyOnceWith("Voice commands aren't available in this browser. You can still use the controls on screen.");
+  });
+  it("restarts natural endings beyond four sessions and fifteen seconds", () => {
+    vi.useFakeTimers();
+    const f = fixture();
     f.controller.startListening();
-    expect(f.events.error).toHaveBeenCalledWith(
-      expect.stringContaining("unavailable"),
-    );
+    for (let i = 0; i < 12; i++) {
+      const rec = FakeRecognition.instances[i];
+      rec.onend?.();
+      expect(f.events.listening).toHaveBeenLastCalledWith(false);
+      vi.advanceTimersByTime(249);
+      expect(FakeRecognition.instances).toHaveLength(i + 1);
+      vi.advanceTimersByTime(1);
+      expect(FakeRecognition.instances).toHaveLength(i + 2);
+    }
+    vi.advanceTimersByTime(60000);
+    expect(FakeRecognition.instances.at(-1)?.aborted).toBe(false);
     f.controller.stop();
   });
-  it("forces a result with narration disabled and listens only after it ends", async () => {
+  it("recovers no-speech, but stops restarting when hidden or explicitly stopped", () => {
+    vi.useFakeTimers();
     const f = fixture();
-    const done = f.controller.say("Product scanned successfully. LOVE JOJO Body Lotion. 1 of 2 received.", 3, true)
-      .then(() => f.controller.startListening());
-    expect(f.controller.enabled).toBe(false);
-    expect(f.speeches[0].text).toContain("LOVE JOJO Body Lotion. 1 of 2 received.");
-    expect(FakeRecognition.instances).toHaveLength(0);
-    f.speeches[0].onend?.({} as SpeechSynthesisEvent);
-    await done;
+    f.controller.startListening();
+    FakeRecognition.instances[0].onerror?.({ error: "no-speech" });
+    FakeRecognition.instances[0].onend?.();
+    vi.advanceTimersByTime(250);
+    expect(FakeRecognition.instances).toHaveLength(2);
+    FakeRecognition.instances[1].onend?.();
+    f.active.value = false;
+    vi.advanceTimersByTime(10000);
+    expect(FakeRecognition.instances).toHaveLength(2);
+    f.controller.stop();
+    f.active.value = true;
+    vi.advanceTimersByTime(10000);
+    expect(FakeRecognition.instances).toHaveLength(2);
+  });
+  it.each(["not-allowed", "service-not-allowed", "network", "audio-capture"])("never auto-retries %s, including after automatic mode requests", error => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.controller.startListening();
+    FakeRecognition.instances[0].onerror?.({ error });
+    for (let i = 0; i < 8; i++) {
+      f.controller.startListening(false);
+      vi.advanceTimersByTime(10000);
+    }
     expect(FakeRecognition.instances).toHaveLength(1);
-    FakeRecognition.instances[0].result("Finish");
-    expect(f.events.command).toHaveBeenCalledWith("finish");
-    f.controller.stop();
-  });
-  it("accepts final phrases only and ends the explicit listening window", () => {
-    const f = fixture();
+    expect(f.events.error).toHaveBeenCalledTimes(1);
+    if (error.includes("allowed")) expect(f.events.error).toHaveBeenCalledWith("Microphone permission is needed for voice commands. Allow microphone access and try again.");
     f.controller.startListening();
-    const rec = FakeRecognition.instances[0];
-    rec.result("stop", false);
-    expect(f.events.command).not.toHaveBeenCalled();
-    rec.result("Stop");
-    expect(f.events.command).toHaveBeenCalledWith("stop");
-    expect(rec.aborted).toBe(true);
-    f.controller.stop();
-  });
-  it("pauses recognition during app speech and ignores stale self-speech callbacks", async () => {
-    const f = fixture();
-    f.controller.enabled = true;
-    f.controller.startListening();
-    const rec = FakeRecognition.instances[0],
-      stale = rec.onresult;
-    const done = f.controller.say("Next item");
-    expect(rec.aborted).toBe(true);
-    stale?.({
-      resultIndex: 0,
-      results: [{ isFinal: true, 0: { transcript: "Next" } }],
-    });
-    expect(f.events.command).not.toHaveBeenCalled();
-    f.speeches[0].onstart?.({} as SpeechSynthesisEvent);
-    expect(f.events.speaking).toHaveBeenLastCalledWith(true);
-    f.speeches[0].onend?.({} as SpeechSynthesisEvent);
-    await done;
     expect(FakeRecognition.instances).toHaveLength(2);
     f.controller.stop();
   });
-  it("prioritizes results, deduplicates progress, and stops speech independently", async () => {
+  it("waits for asynchronous abort onend and command completion before starting another recognizer", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let finish!: () => void;
+    f.events.command.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    f.controller.startListening();
+    const rec = FakeRecognition.instances[0];
+    rec.abort = () => { rec.aborted = true; }; // Real browsers end asynchronously.
+    rec.result("Next");
+    rec.result("Finish");
+    f.controller.startListening(false);
+    vi.advanceTimersByTime(1000);
+    expect(FakeRecognition.instances).toHaveLength(1);
+    rec.onend?.();
+    vi.advanceTimersByTime(1000);
+    expect(FakeRecognition.instances).toHaveLength(1);
+    finish();
+    await Promise.resolve();
+    vi.advanceTimersByTime(250);
+    expect(FakeRecognition.instances).toHaveLength(2);
+    expect(f.events.command).toHaveBeenCalledExactlyOnceWith("next");
+    f.controller.stop();
+  });
+  it("only accepts final results, ignores unknown phrases without disabling intent, and resumes after commands", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.controller.startListening();
+    const rec = FakeRecognition.instances[0];
+    rec.result("Finish", false);
+    rec.result("I bought some soap");
+    expect(f.events.command).not.toHaveBeenCalled();
+    rec.result("finish checking");
+    expect(f.events.command).toHaveBeenCalledExactlyOnceWith("finish");
+    await Promise.resolve();
+    vi.advanceTimersByTime(250);
+    FakeRecognition.instances[1].result("repeat that");
+    expect(f.events.command).toHaveBeenLastCalledWith("repeat");
+    f.controller.stop();
+  });
+  it("keeps barge-in listening, blocks narration commands, clears queued speech and remains usable", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.controller.startListening();
+    const rec = FakeRecognition.instances[0];
+    const spoken = f.controller.say("Product scanned successfully. Say Next or Finish.", 3, true);
+    const queued = f.controller.say("Another message", 1, true);
+    rec.result("Next");
+    rec.result("Finish");
+    rec.result("Repeat");
+    rec.result("Start");
+    expect(f.events.command).not.toHaveBeenCalled();
+    expect(rec.aborted).toBe(false);
+    rec.result("Stop speaking");
+    await Promise.all([spoken, queued]);
+    expect(f.cancel).toHaveBeenCalledTimes(1);
+    expect(f.speeches).toHaveLength(1);
+    expect(f.events.command).toHaveBeenCalledExactlyOnceWith("stop speaking");
+    f.speeches[0].onend?.({} as SpeechSynthesisEvent); // Late synthesis callback.
+    rec.result("Finish");
+    expect(f.events.command).toHaveBeenLastCalledWith("finish");
+    f.controller.stop();
+  });
+  it("Stop during narration cancels speech and recognition without restarting", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.controller.startListening();
+    const rec = FakeRecognition.instances[0];
+    const done = f.controller.say("Long result", 3, true);
+    rec.result("stop camera");
+    await done;
+    vi.advanceTimersByTime(60000);
+    expect(f.cancel).toHaveBeenCalled();
+    expect(rec.aborted).toBe(true);
+    expect(f.events.command).toHaveBeenCalledExactlyOnceWith("stop");
+    expect(FakeRecognition.instances).toHaveLength(1);
+  });
+  it("prioritizes and deduplicates speech, and reports speech failures", async () => {
     const f = fixture();
     f.controller.enabled = true;
     const low = f.controller.say("Reading", 0);
     await f.controller.say("Reading", 0);
-    expect(f.speeches).toHaveLength(1);
     const high = f.controller.say("Unable to verify", 3);
     await low;
-    expect(f.cancel).toHaveBeenCalled();
-    expect(f.speeches[1].text).toBe("Unable to verify");
-    f.controller.cancelSpeech();
+    expect(f.speeches).toHaveLength(2);
+    f.speeches[1].onerror?.({} as SpeechSynthesisErrorEvent);
     await high;
+    expect(f.events.error).toHaveBeenCalledWith(expect.stringContaining("displayed as text"));
     f.controller.stop();
   });
-  it("bounds silence, does not restart on failure, and cancels on backgrounding", () => {
-    vi.useFakeTimers();
-    const f = fixture();
-    f.controller.startListening();
-    vi.advanceTimersByTime(15001);
-    expect(FakeRecognition.instances[0].aborted).toBe(true);
-    f.controller.startListening();
-    FakeRecognition.instances[1].onerror?.({ error: "not-allowed" });
-    expect(f.events.error).toHaveBeenCalledWith(
-      expect.stringContaining("not-allowed"),
-    );
-    vi.advanceTimersByTime(60000);
-    expect(FakeRecognition.instances).toHaveLength(2);
-    f.active.value = false;
-    f.controller.startListening();
-    expect(FakeRecognition.instances).toHaveLength(2);
-    f.controller.stop();
+});
+
+describe("explicit natural command aliases", () => {
+  const aliases = {
+    start: ["start", "start scanning", "start scan", "start checking", "start checking delivery", "begin", "begin scanning"],
+    stop: ["stop", "stop scanning", "stop scanner", "stop camera", "stop checking"],
+    "stop speaking": ["stop speaking", "stop talking", "be quiet", "silence"],
+    repeat: ["repeat", "repeat that", "say that again", "repeat again"],
+    next: ["next", "next product", "scan next", "scan next product", "continue", "continue scanning"],
+    finish: ["finish", "finish checking", "finish checking delivery", "finish delivery", "done", "I'm done", "I am done", "that's all", "that is all", "complete checking"],
+    retry: ["retry", "try again", "scan again"],
+    help: ["help"], "read my orders": ["read my orders"], "read the result again": ["read the result again"],
+    "go back": ["go back"], "yes another unit": ["yes another unit"], "no retry this unit": ["no retry this unit"],
+  };
+  for (const [command, phrases] of Object.entries(aliases)) it.each(phrases)(`maps %s to ${command}`, phrase => {
+    expect(commandFrom(phrase)).toBe(command);
+    expect(commandFrom(` Please, ${phrase.toUpperCase()}! `)).toBe(command);
   });
-  it("recovers from unavailable speech and Stop cancels pending commands", async () => {
-    const f = fixture();
-    f.controller.enabled = true;
-    const done = f.controller.say("Result");
-    f.speeches[0].onerror?.({} as SpeechSynthesisErrorEvent);
-    await done;
-    expect(f.events.error).toHaveBeenCalledWith(
-      expect.stringContaining("displayed as text"),
-    );
-    f.controller.startListening();
-    const rec = FakeRecognition.instances[0];
-    f.controller.stop();
-    rec.result("Start");
-    expect(f.events.command).not.toHaveBeenCalled();
+  it.each(["dont stop", "I will finish later", "the next product is soap", "start buying things", "stop speaking to me", "we are done shopping"])("rejects unrelated speech: %s", phrase => {
+    expect(commandFrom(phrase)).toBeNull();
   });
 });

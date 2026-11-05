@@ -143,7 +143,16 @@ test("synthetic dark camera guidance is accessible, quiet, and preserves manual 
   await page.getByRole("button", { name: "Start camera", exact: true }).click();
   await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeEnabled();
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeEnabled();
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
   await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
   await page.getByRole("button", { name: "Start camera", exact: true }).click();
   await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeEnabled();
   const menu = page.getByRole("button", { name: "Menu", exact: true });
@@ -450,10 +459,12 @@ for (const next of ["button", "voice", "finish"]) test(`successful scan pauses u
     await page.evaluate(() => (window as unknown as { __nextVoice: { emit(): void } }).__nextVoice.emit());
   }
   await expect(diagnostics).toContainText("Scanner phase: scanning");
-  await expect(page.getByRole("heading", { name: "Scanning", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Ready. Present the next product."))).toBe(true);
   await expect.poll(() => diagnostics.getByText(/^Live barcode attempts:/).innerText()).not.toBe(attempts);
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
+  await expect(diagnostics).toContainText("Scanner phase: needs-clarification");
+  await expect(page.getByRole("region", { name: "Session controls" })).toContainText("App speech: silent");
   await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
   await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Yes another unit"));
   await expect(page.getByText("2 of 2 received.", { exact: true })).toBeVisible();
@@ -470,4 +481,136 @@ for (const next of ["button", "voice", "finish"]) test(`successful scan pauses u
   await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Finish"));
   await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("All ordered quantities are complete.");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Delivery checking complete. All ordered products and quantities were received."))).toBe(true);
+});
+
+// Fake browser speech services verify app lifecycle and wiring, not acoustic barge-in.
+async function installCommands(page: Page) {
+  await page.addInitScript(() => {
+    const host = window as unknown as {
+      __command: { emit(text: string): void; end(): void };
+      __commandReady: boolean;
+      __recognitionStarts: number;
+      __recognitionActive: number;
+      __maxRecognitionActive: number;
+      __holdSpeech: boolean;
+      __speechCancels: number;
+      __speeches: { text: string; at: number }[];
+    };
+    host.__recognitionStarts = host.__recognitionActive = host.__maxRecognitionActive = host.__speechCancels = 0;
+    host.__holdSpeech = false;
+    class Recognition {
+      onstart: (() => void) | null = null;
+      onend: (() => void) | null = null;
+      onresult: ((event: { resultIndex: number; results: { isFinal: boolean; 0: { transcript: string } }[] }) => void) | null = null;
+      active = false;
+      constructor() { host.__command = this; }
+      start() {
+        this.active = true;
+        host.__commandReady = true;
+        host.__recognitionStarts++;
+        host.__recognitionActive++;
+        host.__maxRecognitionActive = Math.max(host.__maxRecognitionActive, host.__recognitionActive);
+        this.onstart?.();
+      }
+      end() {
+        host.__commandReady = false;
+        if (this.active) { this.active = false; host.__recognitionActive--; }
+        this.onend?.();
+      }
+      abort() { host.__commandReady = false; setTimeout(() => this.end(), 20); }
+      emit(text: string) { this.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] }); }
+    }
+    Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: Recognition });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: {
+      speak: (utterance: SpeechSynthesisUtterance) => {
+        host.__speeches.push({ text: utterance.text, at: performance.now() });
+        utterance.onstart?.({} as SpeechSynthesisEvent);
+        if (!host.__holdSpeech) setTimeout(() => utterance.onend?.({} as SpeechSynthesisEvent), 10);
+      },
+      cancel: () => { host.__speechCancels++; },
+    } });
+  });
+}
+async function sayCommand(page: Page, text: string) {
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __commandReady: boolean }).__commandReady)).toBe(true);
+  await page.evaluate(text => (window as unknown as { __command: { emit(text: string): void } }).__command.emit(text), text);
+}
+
+test("persistent commands, successful-result barge-in, Repeat, Next and Finish retain one camera", async ({ page }) => {
+  await installCamera(page, true, 2, true);
+  await installCommands(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __recognitionStarts: number }).__recognitionStarts)).toBe(1);
+  // Simulate the mobile service ending repeatedly after silence.
+  for (let i = 1; i <= 6; i++) {
+    await page.evaluate(() => (window as unknown as { __command: { end(): void } }).__command.end());
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __recognitionStarts: number }).__recognitionStarts)).toBe(i + 1);
+  }
+  await page.evaluate(points => {
+    const host = window as unknown as { __barcodePoints: [number, number][]; __holdSpeech: boolean };
+    host.__barcodePoints = points;
+  }, eanPoints("4897099081562"));
+  await expect(page.getByRole("heading", { name: "Product scanned successfully", exact: true })).toBeVisible();
+  await expect(page.getByText("1 of 2 received.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.getByText("Scanner phase: awaiting-next-item", { exact: true })).toHaveCount(1);
+  // Repeat the last human-readable result and hold the mock utterance mid-speech.
+  await page.evaluate(() => { (window as unknown as { __holdSpeech: boolean }).__holdSpeech = true; });
+  const before = await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.at(-1)!.text);
+  await sayCommand(page, "repeat that");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.filter(s => s.text.includes("scanned successfully.")).length)).toBe(2);
+  expect(await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.at(-1)!.text)).toBe(before);
+  await sayCommand(page, "Next");
+  await sayCommand(page, "Finish");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toHaveCount(0);
+  const cancels = await page.evaluate(() => (window as unknown as { __speechCancels: number }).__speechCancels);
+  await sayCommand(page, "stop speaking");
+  expect(await page.evaluate(() => (window as unknown as { __speechCancels: number }).__speechCancels)).toBeGreaterThan(cancels);
+  await expect(page.getByText("1 of 2 received.", { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const host = window as unknown as { __holdSpeech: boolean; __barcodePoints?: unknown };
+    host.__holdSpeech = false;
+    delete host.__barcodePoints;
+  });
+  await sayCommand(page, "scan next product");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.at(-1)!.text)).toBe("Ready. Present the next product.");
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await sayCommand(page, "I'm done");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing 1.");
+  const state = await page.evaluate(() => {
+    const host = window as unknown as { __cameraRequests: number; __cameraStops: number; __maxRecognitionActive: number; __speeches: { text: string }[] };
+    return { requests: host.__cameraRequests, stopped: host.__cameraStops > 0 && document.querySelector("video")?.srcObject == null, max: host.__maxRecognitionActive,
+      summary: host.__speeches.some(s => s.text.includes("2 ordered, 1 received, 1 missing")) };
+  });
+  expect(state).toEqual({ requests: 1, stopped: true, max: 1, summary: true });
+});
+
+test("spoken Stop during scanner speech ends camera, recognition and narration", async ({ page }) => {
+  await installCamera(page);
+  await installCommands(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __recognitionStarts: number }).__recognitionStarts)).toBe(1);
+  await page.evaluate(() => { (window as unknown as { __holdSpeech: boolean }).__holdSpeech = true; });
+  await sayCommand(page, "repeat");
+  await sayCommand(page, "stop camera");
+  await expect(page.getByRole("status")).toContainText("Stopped scanning and listening");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __recognitionActive: number }).__recognitionActive)).toBe(0);
+  await page.waitForTimeout(600);
+  expect(await page.evaluate(() => (window as unknown as { __cameraStops: number }).__cameraStops)).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "Scanner ready", exact: true })).toBeVisible();
+});
+
+test("Start scanning alias invokes the existing scanner and automatically keeps commands available", async ({ page }) => {
+  await installCamera(page);
+  await installCommands(page);
+  await page.goto("/");
+  await page.getByLabel("I understand voice commands may send audio to my browser provider").check();
+  await page.getByRole("button", { name: "Start listening", exact: true }).click();
+  await sayCommand(page, "start scanning");
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __cameraRequests: number }).__cameraRequests)).toBe(1);
+  await sayCommand(page, "finish checking");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing 1.");
 });

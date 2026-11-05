@@ -168,7 +168,7 @@ test("no general narration, no-order start, spoken camera denial and unsupported
   await page
     .getByRole("button", { name: "Start listening", exact: true })
     .click();
-  await expect(page.getByRole("status")).toContainText("unavailable");
+  await expect(page.getByRole("status")).toContainText("Voice commands aren't available in this browser.");
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
     "Confirmed results are preserved",
@@ -329,7 +329,7 @@ test("default colors pass axe; 200 percent text and narrow layout preserve reflo
   ).toBe(true);
 });
 
-test("mocked voice commands drive navigation; app speech pauses and Stop speaking restores intended listening", async ({
+test("mocked voice commands drive navigation and spoken interruption preserves listening", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -411,10 +411,8 @@ test("mocked voice commands drive navigation; app speech pauses and Stop speakin
   ).toContainText("App speech: speaking");
   await expect(
     page.getByRole("region", { name: "Session controls" }),
-  ).toContainText("Microphone: not listening");
-  await page
-    .getByRole("button", { name: "Stop speaking", exact: true })
-    .click();
+  ).toContainText("Microphone: listening");
+  await page.evaluate(() => (window as unknown as { __voice: { emit(text: string): void } }).__voice.emit("Stop speaking"));
   await expect(
     page.getByRole("region", { name: "Session controls" }),
   ).toContainText("Microphone: listening");

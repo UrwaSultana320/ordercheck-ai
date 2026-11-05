@@ -25,29 +25,24 @@ export type Command =
   | "yes another unit"
   | "no retry this unit";
 export function commandFrom(text: string): Command | null {
-  const command = text
-    .toLowerCase()
-    .trim()
-    .replace(/[.!?]+$/, "");
-  return (
-    (
-      [
-        "start",
-        "stop",
-        "repeat",
-        "next",
-        "finish",
-        "help",
-        "retry",
-        "read my orders",
-        "read the result again",
-        "go back",
-        "stop speaking",
-        "yes another unit",
-        "no retry this unit",
-      ] as Command[]
-    ).find((c) => c === command) ?? null
-  );
+  const phrase = text.toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ").trim()
+    .replace(/^(?:please |okay |ok )+/, "")
+    .replace(/ please$/, "");
+  const aliases: [Command, string[]][] = [
+    ["stop speaking", ["stop speaking", "stop talking", "be quiet", "silence"]],
+    ["stop", ["stop", "stop scanning", "stop scanner", "stop camera", "stop checking"]],
+    ["start", ["start", "start scanning", "start scan", "start checking", "start checking delivery", "begin", "begin scanning"]],
+    ["repeat", ["repeat", "repeat that", "say that again", "repeat again"]],
+    ["next", ["next", "next product", "scan next", "scan next product", "continue", "continue scanning"]],
+    ["finish", ["finish", "finish checking", "finish checking delivery", "finish delivery", "done", "im done", "i am done", "thats all", "that is all", "complete checking"]],
+    ["retry", ["retry", "try again", "scan again"]],
+    ...(["help", "read my orders", "read the result again", "go back", "yes another unit", "no retry this unit"] as Command[])
+      .map((c): [Command, string[]] => [c, [c]]),
+  ];
+  return aliases.find(([, phrases]) => phrases.includes(phrase))?.[0] ?? null;
 }
 export function commandAllowed(command: Command, state: SessionState) {
   if (command === "yes another unit" || command === "no retry this unit")

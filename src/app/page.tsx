@@ -245,9 +245,9 @@ export default function Home() {
         and need a network connection.
       </label>
       <p>
-        Start listening requests microphone permission when needed and
-        opens a command window of up to 15 seconds. Listening pauses
-        during app speech. Buttons and keyboard remain available.
+        Voice commands listen automatically during delivery checking and may request
+        microphone permission. During speech, say Stop speaking or Stop.
+        Start listening is available to retry. Buttons and keyboard remain available.
       </p>
       <div className="button-row">
         <button
@@ -1071,17 +1071,17 @@ export default function Home() {
               <h2>Commands and equivalent controls</h2>
               <p>
                 Start, Stop, Repeat, Next, Finish, Help, Retry, Read my orders, Read the
-                result again, Go back, Stop speaking. Only final, exact command
-                phrases are accepted in a valid state. After each result, OrderCheck listens automatically
-                for one window of up to 15 seconds. It ends after a command,
-                silence or service failure. No background or locked-phone
+                result again, Go back, Stop speaking. Natural phrases such as
+                Finish checking, I’m done, and Scan next product are also accepted
+                in a valid state. Listening continues during delivery checking
+                while this page is visible. No background or locked-phone
                 operation is promised.
               </p>
               <p>
-                Recognition pauses during app speech, so voice interruption is
-                unavailable during that pause. Use Stop speaking, Stop, or
-                keyboard/assistive controls. Screen-reader speech may itself be
-                recognized: start a listening window only when ready.
+                During app speech, only Stop speaking and Stop are accepted.
+                Stop speaking clears narration and keeps the session listening.
+                Stop ends scanning, speech and listening. Screen-reader speech
+                may itself be recognized; Stop listening and screen controls remain available.
               </p>
               <h2>Results and recovery</h2>
               <p>

@@ -463,7 +463,11 @@ for (const denied of [false, true]) {
       await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("Scanner ready. Present the first product."))).toBe(true);
       await expect(page.locator("#camera-guidance")).not.toBeEmpty();
       await expect(page.locator(".label-guide")).toBeVisible();
-      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      });
     }
     expect(await page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests.length)).toBe(1);
     const fallback = page.getByRole("button", { name: "Start camera", exact: true });
