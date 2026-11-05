@@ -13,7 +13,6 @@ import {
 import {
   extractOrder,
   orderSchema,
-  userStatus,
   type Item,
   type Order,
 } from "@/lib/engine";
@@ -685,8 +684,8 @@ export default function Home() {
                   <p>
                     Camera access is only for scanning. Hold the phone steady
                     with the rear camera toward one product. Follow the camera
-                    guidance and rotate the product slowly when asked. Different products can
-                    continue automatically. Repeated identities need
+                    guidance and rotate the product slowly when asked. Say Next or tap Scan next product
+                    when ready. Repeated identities need
                     confirmation.
                   </p>
                   <div className="camera">
@@ -708,19 +707,6 @@ export default function Home() {
                   </div>
                   <p>Place the front label inside the guide.</p>
                   <p id="camera-guidance">{a.cameraGuidance}</p>
-                  <section className="scanner-diagnostics" aria-label="Physical test diagnostics">
-                    <h3>Physical test diagnostics (temporary)</h3>
-                    <p>Scanner phase: {a.phase}</p>
-                    <p>Live barcode attempts: {a.diagnostics.liveBarcodeAttempts}</p>
-                    <p>Last barcode decode status: {a.diagnostics.lastBarcodeDecodeStatus}</p>
-                    <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
-                    <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
-                    <p>OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}</p>
-                    <p>OCR attempts: {a.diagnostics.ocrAttempts}</p>
-                    <p>Last OCR confidence: {a.diagnostics.ocrConfidence ?? "none"}</p>
-                    <p>Last OCR text: <span data-testid="raw-ocr-text">{a.diagnostics.ocrText || "none"}</span></p>
-                    <p>Verification result: {a.diagnostics.verification}</p>
-                  </section>
                   <div className="button-row">
                     <button
                       className="primary"
@@ -732,7 +718,7 @@ export default function Home() {
                     <button
                       className="secondary"
                       disabled={
-                        !a.camera || a.phase === "processing" || !!a.pending
+                        !a.camera || a.phase !== "scanning" || !!a.pending
                       }
                       onClick={() => void a.ocr()}
                     >
@@ -740,7 +726,7 @@ export default function Home() {
                     </button>
                   </div>
                   <p>
-                    Automatic OCR reads well-lit, steady, detailed snapshots, one at a time. Camera instructions speak during scanning, even when general narration is off. Guidance uses image detail to suggest framing; it cannot measure distance. You can always choose Read label with OCR.{" "}
+                    Automatic OCR reads well-lit, steady, detailed snapshots, one at a time. Camera instructions speak during scanning, even when general narration is off. Guidance uses image detail to suggest framing; it cannot measure distance. During scanning, you can choose Read label with OCR.{" "}
                     {a.ocrTime !== null &&
                       `Last OCR job: ${a.ocrTime} ms on this device.`}{" "}
                     Unknown codes require a readable label. The catalog contains
@@ -749,26 +735,36 @@ export default function Home() {
                 </section>
                 <section className="panel">
                   <span className="mini-label">YOUR CHECKING RESULT</span>
-                  <h2>
-                    {a.result
-                      ? userStatus(a.result.status)
-                      : "Ready for your first item"}
-                  </h2>
-                  <p>
-                    {a.result?.message ??
-                      "We compare observations with pending purchase references. Missing evidence never counts as a match."}
-                  </p>
-                  {a.result?.reason && <p>Reason: {a.result.reason}</p>}
-                  {a.result?.fields && a.result.fields.length > 0 && (
-                    <details>
-                      <summary>What was checked</summary>
-                      {a.result.fields.map((f) => (
-                        <p key={f.field}>
-                          {f.field}: {f.observed}. Source: {f.source}
-                        </p>
-                      ))}
-                    </details>
-                  )}
+                  <h2>{a.feedback?.title ?? "Ready for your first item"}</h2>
+                  {a.feedback ? <>
+                    {a.feedback.product && <p><strong>{a.feedback.product}</strong></p>}
+                    {a.feedback.description && <p>{a.feedback.description}</p>}
+                    {a.feedback.lines.map(line => <p key={line}>{line}</p>)}
+                  </> : <p>Show one product to check it against your order.</p>}
+                  <details>
+                    <summary>Technical details (testing)</summary>
+                    <section className="scanner-diagnostics" aria-label="Physical test diagnostics">
+                      <h3>Physical test diagnostics (temporary)</h3>
+                      <p>Scanner phase: {a.phase}</p>
+                      <p>Live barcode attempts: {a.diagnostics.liveBarcodeAttempts}</p>
+                      <p>Last barcode decode status: {a.diagnostics.lastBarcodeDecodeStatus}</p>
+                      <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
+                      <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
+                      <p>OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}</p>
+                      <p>OCR attempts: {a.diagnostics.ocrAttempts}</p>
+                      <p>Last OCR confidence: {a.diagnostics.ocrConfidence ?? "none"}</p>
+                      <p>Last OCR text: <span data-testid="raw-ocr-text">{a.diagnostics.ocrText || "none"}</span></p>
+                      <p>Verification result: {a.diagnostics.verification}</p>
+                    </section>
+                    {a.result && <>
+                      <p>{a.result.message}</p>
+                      <p>Reason: {a.result.reason}</p>
+                      {a.result.fields?.map(f => <p key={f.field}>{f.field}: {f.observed}. Source: {f.source}</p>)}
+                    </>}
+                    {a.data.attempts.map(event => <p key={event.id}>
+                      Capture: {event.captureId}. Result: {event.status}. Reason: {event.reason}. {event.message}
+                    </p>)}
+                  </details>
                   {a.pending?.verdict.candidates?.map((c) => (
                     <button
                       className="secondary"
@@ -803,7 +799,7 @@ export default function Home() {
                       disabled={!commandAllowed("next", a.phase)}
                       onClick={a.nextItem}
                     >
-                      Next item
+                      Scan next product
                     </button>
                     <button
                       className="secondary"
@@ -881,7 +877,7 @@ export default function Home() {
                 </h2>
                 <p>
                   {a.stats.matched} of {a.stats.total} ordered units matched and counted.{" "}
-                  {a.stats.left} ordered units are still missing from the scan count.{" "}
+                  {a.stats.left} ordered {a.stats.left === 1 ? "unit is" : "units are"} still expected.{" "}
                   {a.stats.mismatch} wrong-product scans · {a.stats.unresolved} unable to verify.{" "}
                   {a.stats.unknown} lines have unknown quantities.{" "}
                   Wrong or unresolved scans do not reduce the remaining ordered quantity.
@@ -912,7 +908,7 @@ export default function Home() {
                   .filter((event) => !event.undone)
                   .map((event) => (
                     <p key={event.id}>
-                      {userStatus(event.status)}: {event.message}{" "}
+                      {event.status === "MATCH" ? "Product scanned successfully" : event.status === "MISMATCH" ? "Product does not match. Nothing was counted." : "Product could not be verified. Nothing was counted."}{" "}
                       {event.confirmedAnotherUnit
                         ? "Another physical unit confirmed by user."
                         : ""}
@@ -1018,8 +1014,7 @@ export default function Home() {
                   automatic OCR try, or choose Read label with OCR.
                 </li>
                 <li>
-                  Read the result or opt into app spoken guidance. Different
-                  identifiable products advance automatically. For identical
+                  Read the result or opt into app spoken guidance. Say Next or tap Scan next product when ready. For identical
                   products, confirm another unit. Retry updates one attempt.
                   Undo reverses its event.
                 </li>

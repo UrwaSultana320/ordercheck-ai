@@ -60,24 +60,24 @@ test("import, duplicate confirmation, retry, Undo and optional session storage",
   await expect(page.getByText("0 / 2 matching", { exact: true })).toBeVisible();
   await scanManually(page);
   await expect(
-    page.getByRole("heading", { name: "match", exact: true }),
+    page.getByRole("heading", { name: "Product scanned successfully", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(/1 of 2 expected units checked/)).toBeVisible();
+  await expect(page.getByText(/1 of 2 ordered units matched and counted/)).toBeVisible();
   await page
     .getByRole("button", { name: "Check barcode", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: "Is this another physical unit?" }),
   ).toBeVisible();
-  await expect(page.getByText(/1 of 2 expected units checked/)).toBeVisible();
+  await expect(page.getByText(/1 of 2 ordered units matched and counted/)).toBeVisible();
   await page
     .getByRole("button", { name: "No, retry this unit", exact: true })
     .click();
   await page
     .getByRole("button", { name: "Check barcode", exact: true })
     .click();
-  await expect(page.getByText(/1 of 2 expected units checked/)).toBeVisible();
-  await page.getByRole("button", { name: "Next item", exact: true }).click();
+  await expect(page.getByText(/1 of 2 ordered units matched and counted/)).toBeVisible();
+  await page.getByRole("button", { name: "Scan next product", exact: true }).click();
   await page
     .getByRole("button", { name: "Check barcode", exact: true })
     .click();
@@ -85,13 +85,13 @@ test("import, duplicate confirmation, retry, Undo and optional session storage",
     .getByRole("button", { name: "Yes, another unit", exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: "Checking complete", exact: true }),
+    page.getByRole("heading", { name: "Checking progress", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(/2 of 2 expected units checked/)).toBeVisible();
+  await expect(page.getByText(/2 of 2 ordered units matched and counted/)).toBeVisible();
   await page
     .getByRole("button", { name: "Undo last checking event", exact: true })
     .click();
-  await expect(page.getByText(/1 of 2 expected units checked/)).toBeVisible();
+  await expect(page.getByText(/1 of 2 ordered units matched and counted/)).toBeVisible();
   await page
     .getByLabel("Keep orders in this browser tab for this session")
     .check();
@@ -150,7 +150,7 @@ test("no general narration, no-order start, spoken camera denial and unsupported
     .getByRole("button", { name: "Check barcode", exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: "match", exact: true }),
+    page.getByRole("heading", { name: "Product scanned successfully", exact: true }),
   ).toBeVisible();
   await page
     .getByLabel("I understand voice commands", { exact: false })
@@ -183,13 +183,14 @@ test("packing-slip provenance and unknown quantity never become a verified deliv
     .click();
   await scanManually(page);
   await expect(
-    page.getByRole("heading", { name: "unable_to_verify", exact: true }),
+    page.getByRole("heading", { name: "Unable to verify this product", exact: true }),
   ).toBeVisible();
+  await page.getByText("Technical details (testing)", { exact: true }).click();
   await expect(
     page.getByText("Reason: DEPENDENT_REFERENCE", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText(/0 matching · 0 mismatching · 1 unable to verify/),
+    page.getByText(/0 wrong-product scans · 1 unable to verify/),
   ).toBeVisible();
 });
 test("preferences persist without storing receipts; views reflow and meet automated axe checks", async ({
@@ -262,7 +263,7 @@ test("keyboard skip link, navigation focus and nonvoice completion", async ({
   ).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("heading", { name: "Checking complete", exact: true }),
+    page.getByRole("heading", { name: "Checking progress", exact: true }),
   ).toBeVisible();
 });
 test("ambiguous orders require explicit selection and unrelated scans stay unassigned", async ({
@@ -272,18 +273,22 @@ test("ambiguous orders require explicit selection and unrelated scans stay unass
   await addOrder(page, "Oat drink | Everyday | Original | 1 L | 1", "First");
   await addOrder(page, "Oat drink | Everyday | Original | 1 L | 1", "Second");
   await scanManually(page);
+  await page.getByText("Technical details (testing)", { exact: true }).click();
   await expect(
     page.getByText("Reason: AMBIGUOUS_ORDER", { exact: true }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Second: Oat drink", exact: true })
     .click();
-  await expect(page.getByText(/1 of 2 expected units checked/)).toBeVisible();
+  await expect(page.getByText(/1 of 2 ordered units matched and counted/)).toBeVisible();
   await page.getByLabel("Enter a barcode").fill("unknown");
   await page
     .getByRole("button", { name: "Check barcode", exact: true })
     .click();
-  await expect(page.getByText(/1 scans are unassigned/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Unable to verify this product", exact: true })).toBeVisible();
+  await expect(page.getByText(/1 of 2 ordered units matched and counted/)).toBeVisible();
+  await page.getByRole("button", { name: "Finish checking delivery", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("1 ordered units missing");
 });
 
 test("default colors pass axe; 200 percent text and narrow layout preserve reflow", async ({

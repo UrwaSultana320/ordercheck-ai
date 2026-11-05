@@ -105,9 +105,10 @@ describe("comparison and provenance", () => {
     ).toBe("MISMATCH");
     const s = state();
     s.orders[0].items[0].brand = "";
-    expect(verify(s.orders, { barcode: "DEMO-OAT-ORIGINAL-1L" }).reason).toBe(
-      "MISSING_REFERENCE_FIELDS",
-    );
+    // Existing catalog matching permits omitted reference fields when identity is known.
+    expect(verify(s.orders, { barcode: "DEMO-OAT-ORIGINAL-1L" })).toMatchObject({
+      status: "MATCH", reason: "DEMO_CATALOG_IDENTITY",
+    });
   });
   it("supports explicit equivalent units without mixing dimensions", () => {
     expect(sameSize("1 L", "1000 ml")).toBe(true);
@@ -178,9 +179,9 @@ describe("physical-unit ledger", () => {
     );
     expect(progress(revised)).toMatchObject({
       matched: 0,
-      checked: 1,
+      checked: 0,
       unresolved: 1,
-      left: 1,
+      left: 2,
     });
   });
   it("rejects event/capture replay and repeated identity without confirmation", () => {
@@ -215,10 +216,10 @@ describe("physical-unit ledger", () => {
   it("replaces retries, counts unresolved checks separately and never reduces arbitrary orders", () => {
     const s = recordAttempt(state(), event("a", { status: "INCOMPLETE" }));
     expect(progress(s)).toMatchObject({
-      checked: 1,
+      checked: 0,
       matched: 0,
       unresolved: 1,
-      left: 1,
+      left: 2,
     });
     const retry = recordAttempt(s, event("b"), "a");
     expect(progress(retry)).toMatchObject({

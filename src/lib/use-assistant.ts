@@ -15,6 +15,7 @@ import {
   type Verdict,
   type Attempt,
 } from "./engine";
+import { scanFeedback } from "./scan-feedback";
 import { deliveryCameraConstraints, focusCamera, OcrReader } from "./media";
 import { analyzeFrame, BoundedAutomaticRead, AutomaticOcrViews, CameraGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
 import { orderStorage } from "./order-storage";
@@ -382,7 +383,7 @@ export function useAssistant(
         acquired,
         video.current,
         (found) => {
-          if (epoch !== generation.current || !mounted.current) return;
+          if (epoch !== generation.current || !mounted.current || phaseRef.current !== "scanning") return;
           // ZXing calls back after each actual attempt, including NotFound.
           setDiagnostics(d => ({ ...d, liveBarcodeAttempts: d.liveBarcodeAttempts + 1,
             lastBarcodeDecodeStatus: found ? "detected" : "searching" }));
@@ -390,7 +391,7 @@ export function useAssistant(
             !found ||
             epoch !== generation.current ||
             !mounted.current ||
-            !["scanning", "awaiting-next-item"].includes(phaseRef.current)
+            phaseRef.current !== "scanning"
           )
             return;
           const code = found.getText();
@@ -452,8 +453,8 @@ export function useAssistant(
         if (!v?.videoWidth || epoch !== generation.current ||
           document.visibilityState !== "visible") return;
         const scanning = !ocrBusy.current &&
-          ["scanning", "awaiting-next-item"].includes(phaseRef.current);
-        if (!scanning) { guidance.reset(); boundedRead.reset(); }
+          phaseRef.current === "scanning";
+        if (!scanning) { guidance.reset(); boundedRead.reset(); return; }
         if (analysisFailed) return;
         try {
           if (!ctx || !tinyContext) throw new Error("Canvas unavailable");
@@ -509,7 +510,7 @@ export function useAssistant(
     }
   }
   async function ocr(automatic = false) {
-    if (!["scanning", "awaiting-next-item"].includes(phaseRef.current)) return;
+    if (phaseRef.current !== "scanning") return;
     const v = video.current;
     if (!v?.videoWidth || !reader.current || !stream.current || ocrBusy.current)
       return;
@@ -680,7 +681,7 @@ export function useAssistant(
       verdict.itemId = old.itemId;
     }
     setResult(verdict);
-    setCameraGuidance(verdict.status === "MATCH" ? "Match" : verdict.status === "MISMATCH" ? "Mismatch" : "Unable to verify");
+    setCameraGuidance(scanFeedback(verdict, dataRef.current).title);
     // Revise catalog-only evidence only from barcode+OCR read from one snapshot
     // in the same observed presentation, never from unrelated captures.
     if (
@@ -719,7 +720,7 @@ export function useAssistant(
     if (verdict.candidates?.length) {
       pendingTo({ evidence, verdict, another: false, retry: retryId.current });
       phaseTo("needs-clarification");
-      void announce(verdict.message, 3);
+      void announce("Which order item are you checking? Choose the expected product below. Nothing was counted.", 3);
       return;
     }
     const seen = dataRef.current.attempts.some(
@@ -776,21 +777,19 @@ export function useAssistant(
       return;
     }
     update(next);
-    const counts = progress(next),
-      finished = counts.total > 0 && counts.left === 0 && counts.unknown === 0;
-    const summary = finished
-      ? ` Checking complete: ${counts.matched} matching, ${counts.mismatch} mismatching, ${counts.unresolved} unable to verify; ${counts.unassigned} unassigned scans remain separate.`
-      : " Present a different product when ready. Identical units need confirmation.";
+    const feedback = scanFeedback(p.verdict, next);
+    setCameraGuidance(p.verdict.status === "MATCH"
+      ? "Move this product away. Say Next or tap Scan next product when ready."
+      : feedback.lines.join(" "));
     phaseTo("announcing-result");
     const epoch = generation.current;
-    void announce(p.verdict.message + summary, 3).then(() => {
+    void announce(feedback.spoken, 3).then(() => {
       if (
         mounted.current &&
         epoch === generation.current &&
         phaseRef.current === "announcing-result"
       ) {
-        if (finished) releaseCamera();
-        phaseTo(finished ? "finished" : "awaiting-next-item");
+        phaseTo("awaiting-next-item");
       }
     });
   }
@@ -798,9 +797,12 @@ export function useAssistant(
     pendingTo(null);
     retryId.current = undefined;
     gate.current.next();
+    ocrViews.current = new AutomaticOcrViews();
+    ocrRecovery.current = "";
     phaseTo(stream.current ? "scanning" : "awaiting-next-item");
+    setCameraGuidance("Ready. Present the next product.");
     void announce(
-      "Present the next item. This action does not count a unit. Identical products need confirmation.",
+      "Ready. Present the next product.",
     );
   }
   function retry() {
@@ -875,7 +877,7 @@ export function useAssistant(
       case "read the result again":
         void announce(
           c === "read the result again"
-            ? (result?.message ?? "No result yet.")
+            ? (result ? scanFeedback(result, dataRef.current).spoken : "No result yet.")
             : messageRef.current,
           3,
         );
@@ -911,6 +913,7 @@ export function useAssistant(
     }
   }
   return {
+    feedback: result ? scanFeedback(result, data) : null,
     diagnostics,
     cameraGuidance,
     tab,
