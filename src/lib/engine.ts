@@ -172,16 +172,25 @@ export function verify(orders: Order[], evidence: Evidence): Verdict {
       "EVIDENCE_CONFLICT",
       "The label contains more than one identity. Isolate one package and retry.",
     );
+  // A known barcode is strong physical identity evidence. Voice orders may keep
+  // brand/variant words inside the natural product name instead of splitting
+  // them into database-style fields, so compare explicit fields when present
+  // and use the combined spoken reference for the product name.
+  const catalogCompatible = (i: Item) => {
+    if (!product) return false;
+    const reference = [i.name, i.brand, i.variant].filter(Boolean).join(" ");
+    const nameMatches =
+      contains(reference, product.name) || contains(product.name, i.name);
+    const brandMatches =
+      !i.brand || normalize(i.brand) === normalize(product.brand);
+    const variantMatches =
+      !i.variant || normalize(i.variant) === normalize(product.variant);
+    const sizeMatches = !i.size || sameSize(i.size, product.size);
+    return nameMatches && brandMatches && variantMatches && sizeMatches;
+  };
   const compatible = all.filter(({ i }) =>
     product
-      ? [i.name, i.brand, i.variant, i.size].every(
-          (v, j) =>
-            !!v &&
-            (j === 3
-              ? sameSize(v, product.size)
-              : normalize(v) ===
-                normalize([product.name, product.brand, product.variant][j])),
-        )
+      ? catalogCompatible(i)
       : [i.name, i.brand, i.variant].every((v) => hasField(text, v)) &&
         !!i.size &&
         sizes(text).some((s) => sameSize(s.raw, i.size)),
@@ -240,7 +249,8 @@ export function verify(orders: Order[], evidence: Evidence): Verdict {
     );
   const related = all.filter(({ i }) =>
     product
-      ? normalize(i.name) === normalize(product.name)
+      ? contains([i.name, i.brand, i.variant].filter(Boolean).join(" "), product.name) ||
+        contains(product.name, i.name)
       : contains(text, i.name),
   );
   const relatedLine = related.length === 1 ? related[0] : undefined;
@@ -376,17 +386,14 @@ export function recordAttempt(
     .find((o) => o.id === attempt.orderId)
     ?.items.find((i) => i.id === attempt.itemId);
   if (attempt.itemId && !line) return state;
-  const previousNonmatches = active.filter(
-    (a) =>
-      a.orderId === attempt.orderId &&
-      a.itemId === attempt.itemId &&
-      a.status !== "MATCH",
-  ).length;
+  // Only successfully matched physical units consume ordered quantity.
+  // Wrong/unresolved scans remain evidence in history but must not make a
+  // missing ordered unit look as though it has already been received.
   if (
     line &&
     line.quantity !== null &&
-    line.verified - (old?.status === "MATCH" ? 1 : 0) + previousNonmatches >=
-      line.quantity
+    attempt.status === "MATCH" &&
+    line.verified - (old?.status === "MATCH" ? 1 : 0) >= line.quantity
   )
     return state;
   const orders = state.orders.map((o) => ({
@@ -433,7 +440,6 @@ export function undoAttempt(state: CheckState, id: string): CheckState {
 export function progress(state: CheckState) {
   let total = 0,
     matched = 0,
-    checked = 0,
     unknown = 0,
     waiting = 0,
     mismatch = 0,
@@ -455,24 +461,65 @@ export function progress(state: CheckState) {
       }
       total += i.quantity;
       matched += i.verified;
-      const done = Math.min(i.quantity, i.verified + events.length);
-      checked += done;
       mismatch += events.filter((a) => a.status === "MISMATCH").length;
       unresolved += events.filter((a) => a.status !== "MISMATCH").length;
-      if (done < i.quantity) pending = true;
+      if (i.verified < i.quantity) pending = true;
     }
     if (pending) waiting++;
   }
   return {
     total,
     matched,
-    checked,
-    left: total - checked,
+    checked: matched,
+    left: Math.max(0, total - matched),
     unknown,
     waiting,
     mismatch,
     unresolved,
     unassigned: state.attempts.filter((a) => !a.undone && !a.itemId).length,
+  };
+}
+
+export type DeliveryReportLine = {
+  orderId: string;
+  itemId: string;
+  label: string;
+  product: string;
+  ordered: number | null;
+  scanned: number;
+  missing: number | null;
+  status: "complete" | "missing" | "unknown";
+};
+
+export function deliveryReport(state: CheckState) {
+  const lines: DeliveryReportLine[] = state.orders.flatMap((o) =>
+    o.items.map((i) => {
+      const missing =
+        i.quantity === null ? null : Math.max(0, i.quantity - i.verified);
+      return {
+        orderId: o.id,
+        itemId: i.id,
+        label: o.label,
+        product: [i.brand, i.name, i.variant, i.size]
+          .filter(Boolean)
+          .join(" "),
+        ordered: i.quantity,
+        scanned: i.verified,
+        missing,
+        status:
+          i.quantity === null
+            ? "unknown" as const
+            : missing === 0
+              ? "complete" as const
+              : "missing" as const,
+      };
+    }),
+  );
+  return {
+    lines,
+    missingUnits: lines.reduce((sum, line) => sum + (line.missing ?? 0), 0),
+    unknownLines: lines.filter((line) => line.status === "unknown").length,
+    completeLines: lines.filter((line) => line.status === "complete").length,
   };
 }
 export function extractOrder(text: string): Item[] {
