@@ -819,6 +819,13 @@ export default function Home() {
                     >
                       Undo last checking event
                     </button>
+                    <button
+                      className="primary"
+                      disabled={a.phase === "requesting-permission" || a.phase === "processing"}
+                      onClick={a.finishChecking}
+                    >
+                      Finish checking delivery
+                    </button>
                   </div>
                   <hr />
                   <h3>Use without a camera or voice</h3>
@@ -873,13 +880,34 @@ export default function Home() {
                     : "Checking progress"}
                 </h2>
                 <p>
-                  {a.stats.checked} of {a.stats.total} expected units checked.{" "}
-                  {a.stats.matched} matching · {a.stats.mismatch} mismatching ·{" "}
-                  {a.stats.unresolved} unable to verify · {a.stats.left} not yet
-                  checked. {a.stats.unknown} lines have unknown quantities.{" "}
-                  {a.stats.unassigned} scans are unassigned and do not reduce
-                  any order&apos;s quantity.
+                  {a.stats.matched} of {a.stats.total} ordered units matched and counted.{" "}
+                  {a.stats.left} ordered units are still missing from the scan count.{" "}
+                  {a.stats.mismatch} wrong-product scans · {a.stats.unresolved} unable to verify.{" "}
+                  {a.stats.unknown} lines have unknown quantities.{" "}
+                  Wrong or unresolved scans do not reduce the remaining ordered quantity.
                 </p>
+                {a.phase === "finished" && (
+                  <section aria-label="Final delivery report">
+                    <h3>Final delivery report</h3>
+                    {a.report.lines.map((line) => (
+                      <p key={`${line.orderId}:${line.itemId}`}>
+                        <strong>{line.product}</strong>: ordered {line.ordered ?? "unknown"}, scanned {line.scanned}.{" "}
+                        {line.status === "complete"
+                          ? "Complete."
+                          : line.status === "missing"
+                            ? `Missing ${line.missing}.`
+                            : "Ordered quantity is unknown."}
+                      </p>
+                    ))}
+                    <p>
+                      <strong>
+                        {a.report.missingUnits === 0 && a.report.unknownLines === 0
+                          ? "All ordered quantities are complete."
+                          : `${a.report.missingUnits} ordered units missing. ${a.report.unknownLines} lines have unknown quantities.`}
+                      </strong>
+                    </p>
+                  </section>
+                )}
                 {a.data.attempts
                   .filter((event) => !event.undone)
                   .map((event) => (
