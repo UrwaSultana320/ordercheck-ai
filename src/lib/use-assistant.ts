@@ -7,6 +7,7 @@ import {
   recordAttempt,
   undoAttempt,
   progress,
+  deliveryReport,
   savedStateSchema,
   sessionSchema,
   type CheckState,
@@ -824,6 +825,29 @@ export function useAssistant(
       "Retrying the current unit. New evidence replaces its attempt without adding another checked unit.",
     );
   }
+  function finishChecking() {
+    const report = deliveryReport(dataRef.current);
+    releaseCamera();
+    pendingTo(null);
+    retryId.current = undefined;
+    phaseTo("finished");
+    const missing = report.lines.filter((line) => line.status === "missing");
+    const unknown = report.lines.filter((line) => line.status === "unknown");
+    const complete = report.lines.filter((line) => line.status === "complete");
+    const details = [
+      ...missing.map((line) =>
+        `${line.product}: ordered ${line.ordered}, scanned ${line.scanned}, missing ${line.missing}.`,
+      ),
+      ...unknown.map((line) =>
+        `${line.product}: ordered quantity is unknown, scanned ${line.scanned}.`,
+      ),
+    ].join(" ");
+    const summary = missing.length || unknown.length
+      ? `Delivery check finished. ${complete.length} product lines complete. ${report.missingUnits} ordered units missing. ${unknown.length} lines have unknown quantities. ${details}`
+      : `Delivery check finished. All ${complete.length} product lines are complete. No ordered units are missing.`;
+    void announce(summary, 3, true);
+  }
+
   function command(c: Command) {
     if (!commandAllowed(c, phaseRef.current)) {
       void announce(
@@ -911,6 +935,7 @@ export function useAssistant(
     pending,
     ocrTime,
     stats: progress(data),
+    report: deliveryReport(data),
     announce,
     speakOrder: (text: string, explicit = false) => voice.current?.say(text, 3, explicit) ?? Promise.resolve(),
     start,
@@ -920,6 +945,7 @@ export function useAssistant(
     command,
     nextItem,
     retry,
+    finishChecking,
     confirmAnother: () => {
       if (pending) commit(pending);
     },
