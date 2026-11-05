@@ -1,6 +1,6 @@
 // Frame-content heuristics, never object detection or a distance measurement.
 export const GUIDANCE = {
-  started: "Camera started. Hold one product in front of the camera.",
+  started: "Scanner ready. Present the first product.",
   dark: "More light is needed.",
   moving: "Hold still.",
   detail: "Move the product closer.",

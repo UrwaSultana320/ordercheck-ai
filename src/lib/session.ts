@@ -14,6 +14,7 @@ export type Command =
   | "start"
   | "stop"
   | "repeat"
+  | "finish"
   | "next"
   | "help"
   | "retry"
@@ -35,6 +36,7 @@ export function commandFrom(text: string): Command | null {
         "stop",
         "repeat",
         "next",
+        "finish",
         "help",
         "retry",
         "read my orders",
@@ -50,6 +52,8 @@ export function commandFrom(text: string): Command | null {
 export function commandAllowed(command: Command, state: SessionState) {
   if (command === "yes another unit" || command === "no retry this unit")
     return state === "needs-clarification";
+  if (command === "finish")
+    return ["scanning", "awaiting-next-item", "needs-clarification"].includes(state);
   if (command === "retry" || command === "next")
     return [
       "awaiting-next-item",

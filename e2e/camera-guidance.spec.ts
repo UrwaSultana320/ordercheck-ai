@@ -114,13 +114,14 @@ test("synthetic dark camera guidance is accessible, quiet, and preserves manual 
   await page.goto("/");
   expect(await page.evaluate(() => (window as unknown as { __cameraRequests: number }).__cameraRequests)).toBe(0);
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   const status = page.getByRole("status");
   await expect(status).toContainText("More light is needed.", { timeout: 20000 });
   await expect(page.locator("#camera-guidance")).toHaveText("More light is needed.");
   expect(await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.map(s => s.text))).toEqual([
     "Opening the delivery scanner. Your browser may ask for camera permission.",
-    "Camera started. Hold one product in front of the camera.", "More light is needed.",
+    "Scanner ready. Present the first product.", "More light is needed.",
   ]);
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeEnabled();
   await expect(page.getByLabel("Enter a barcode")).toBeEnabled();
@@ -157,7 +158,8 @@ test("visual transitions bypass speech throttling; failed OCR retries only a new
   await page.goto("/");
   await page.evaluate(() => { (window as unknown as { __legacyJitter: boolean }).__legacyJitter = true; });
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   await expect(page.getByRole("status")).toContainText("More light is needed.");
   const darkAt = await page.evaluate(() => (window as unknown as { __speeches: { text: string; at: number }[] }).__speeches.find(s => s.text === "More light is needed.")!.at);
   await page.evaluate(() => { (window as unknown as { __plain: boolean }).__plain = true; });
@@ -191,7 +193,8 @@ test("camera instructions remain visible without speech synthesis", async ({ pag
   await installCamera(page, false);
   await page.goto("/");
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   await expect(page.locator("#camera-guidance")).toHaveText("More light is needed.");
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Stop camera", exact: true }).click();
@@ -221,7 +224,8 @@ test("stable high-quality snapshot barcode uses real ZXing, skips OCR and dedupl
   await page.goto("/");
   await page.evaluate(() => { (window as unknown as { __cameraPattern: boolean }).__cameraPattern = true; });
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __snapshotReads: number }).__snapshotReads), { timeout: 15000 }).toBe(1);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Barcode detected. Checking this product."))).toBe(true);
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
@@ -247,7 +251,8 @@ test("unknown live barcode automatically reads label on the same presentation be
     host.__ocrDelay = 1500;
   }, points);
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads), { timeout: 20000 }).toBe(1);
   await expect(page.getByRole("region", { name: "Physical test diagnostics" })).toContainText("Barcode known: no");
   await expect(page.getByRole("region", { name: "Physical test diagnostics" })).toContainText("Barcode detected: 5901234123457");
@@ -269,7 +274,8 @@ test("bounded imperfect view attempts once then keeps rotation status until the 
   await page.goto("/");
   await page.evaluate(() => { (window as unknown as { __plain: boolean }).__plain = true; });
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   await expect(page.locator("#camera-guidance")).not.toBeEmpty();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads), { timeout: 18000 }).toBe(1);
   await expect(page.locator("#camera-guidance")).toHaveText("I could not find a readable barcode or product label. Place the product label inside the guide.");
@@ -284,7 +290,8 @@ for (const rotated of [false, true]) test(`benchmark EAN-13 ${rotated ? "rotated
   const points = eanPoints(code).map(([x, y]): [number, number] => rotated ? [199 - y, x] : [x, y]);
   await page.goto("/");
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
   await expect(diagnostics).toContainText("Last barcode decode status: searching");
   await expect.poll(async () => Number((await diagnostics.getByText(/^Live barcode attempts:/).innerText()).split(": ")[1])).toBeGreaterThan(1);
@@ -324,7 +331,8 @@ for (const confidence of [95, 70, 20]) test(`front-label raw OCR diagnostics pre
     host.__cameraPattern = true; host.__ocrText = raw; host.__ocrConfidence = confidence;
   }, { raw, confidence });
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
   await expect(diagnostics).toContainText("OCR attempts: 1", { timeout: 20000 });
   await expect(diagnostics).toContainText("OCR attempted: yes");
@@ -343,7 +351,8 @@ test("stable empty view reports no readable evidence, speaks recovery and never 
   await page.goto("/");
   await page.evaluate(() => { (window as unknown as { __plain: boolean }).__plain = true; });
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
   await expect(diagnostics).toContainText("OCR attempts: 0");
   await expect(diagnostics).toContainText("Verification result: not checked");
@@ -368,7 +377,8 @@ test("unknown decoded barcode with empty OCR retains existing rotation recovery"
   await page.goto("/");
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   await expect(page.locator("#camera-guidance")).toHaveText("I could not read this side. Slowly rotate the product.", { timeout: 20000 });
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
   await expect(diagnostics).toContainText("Barcode detected: 5901234123457");
@@ -379,11 +389,11 @@ test("unknown decoded barcode with empty OCR retains existing rotation recovery"
   expect(saved.attempts).toHaveLength(0);
 });
 
-for (const next of ["button", "voice"]) test(`successful scan pauses until ${next} Next, retains camera and reports each confirmed unit`, async ({ page }, testInfo) => {
+for (const next of ["button", "voice", "finish"]) test(`successful scan pauses until ${next} Next, retains camera and reports each confirmed unit`, async ({ page }, testInfo) => {
   test.setTimeout(60000);
   await installCamera(page, true, 2, true);
   await page.addInitScript(() => {
-    localStorage.setItem("ordercheck.preferences.v1", JSON.stringify({ spoken: true }));
+    localStorage.setItem("ordercheck.preferences.v1", JSON.stringify({ spoken: false }));
     class Recognition {
       onstart: (() => void) | null = null;
       onend: (() => void) | null = null;
@@ -391,24 +401,30 @@ for (const next of ["button", "voice"]) test(`successful scan pauses until ${nex
       constructor() { (window as unknown as { __nextVoice: Recognition }).__nextVoice = this; }
       start() { this.onstart?.(); }
       abort() { this.onend?.(); }
-      emit() { this.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: "Next" } }] }); }
+      emit(transcript = "Next") { this.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript } }] }); }
     }
     Object.defineProperty(window, "SpeechRecognition", { value: Recognition, configurable: true });
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Start checking my delivery", exact: true }).click();
-  const details = page.locator("details").filter({ has: page.getByText("Technical details (testing)", { exact: true }) });
+  const details = page.locator("details").filter({ has: page.getByText("Technical details", { exact: true }) });
   await expect(details).not.toHaveAttribute("open");
   const points = eanPoints("4897099081562");
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
   await expect(page.getByRole("heading", { name: "Product scanned successfully", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scan next product", exact: true })).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Start listening", exact: true })).not.toBeVisible();
+  expect(await page.locator("main").innerText()).not.toMatch(/DEMO_CATALOG|Capture:|OCR attempts|Live barcode attempts|Scanner phase|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{22,}/);
   await expect(page.getByText("1 of 2 received.", { exact: true })).toBeVisible();
   await expect(page.getByText("1 more is still expected.", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Final delivery report" })).toHaveCount(0);
   await expect(page.getByText("Reason: DEMO_CATALOG_IDENTITY", { exact: true })).not.toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("scanner-screen.png"), fullPage: true });
   await page.locator("section.panel").filter({ has: page.getByRole("heading", { name: "Product scanned successfully", exact: true }) }).screenshot({ path: testInfo.outputPath("successful-scan.png") });
   await expect(page.getByText(/Source: demonstration catalog/).first()).not.toBeVisible();
-  await page.getByText("Technical details (testing)", { exact: true }).click();
+  await page.getByText("Technical details", { exact: true }).click();
+  await page.getByText("More options", { exact: true }).click();
   const diagnostics = page.getByRole("region", { name: "Physical test diagnostics" });
   await expect(diagnostics).toContainText("Scanner phase: awaiting-next-item");
   const attempts = await diagnostics.getByText(/^Live barcode attempts:/).innerText();
@@ -417,21 +433,29 @@ for (const next of ["button", "voice"]) test(`successful scan pauses until ${nex
   await expect(diagnostics.getByText(/^Live barcode attempts:/)).toHaveText(attempts);
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
   expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts)).toHaveLength(1);
+  if (next === "finish") {
+    await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+    await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Finish"));
+    await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing 1.");
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text.includes("2 ordered, 1 received, 1 missing")))).toBe(true);
+    return;
+  }
   await expect(page.getByRole("button", { name: "Read label with OCR", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeVisible();
   await page.evaluate(() => { delete (window as unknown as { __barcodePoints?: unknown }).__barcodePoints; });
   await page.waitForTimeout(250);
   if (next === "button") await page.getByRole("button", { name: "Scan next product", exact: true }).click();
   else {
-    await page.getByLabel("I understand voice commands may send audio to my browser provider and need a network connection.").check();
-    await page.getByRole("button", { name: "Start listening", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
     await page.evaluate(() => (window as unknown as { __nextVoice: { emit(): void } }).__nextVoice.emit());
   }
   await expect(diagnostics).toContainText("Scanner phase: scanning");
-  await expect(page.getByRole("status")).toContainText("Ready. Present the next product.");
+  await expect(page.getByRole("heading", { name: "Scanning", exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Ready. Present the next product."))).toBe(true);
   await expect.poll(() => diagnostics.getByText(/^Live barcode attempts:/).innerText()).not.toBe(attempts);
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
-  await page.getByRole("button", { name: "Yes, another unit", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Yes another unit"));
   await expect(page.getByText("2 of 2 received.", { exact: true })).toBeVisible();
   await expect(page.getByText("This product is complete.", { exact: true })).toBeVisible();
   await expect(diagnostics).toContainText("Scanner phase: awaiting-next-item");
@@ -442,6 +466,8 @@ for (const next of ["button", "voice"]) test(`successful scan pauses until ${nex
   const camera = await page.evaluate(() => ({ requests: (window as unknown as { __cameraRequests: number }).__cameraRequests, stops: (window as unknown as { __cameraStops: number }).__cameraStops, active: (document.querySelector("video")!.srcObject as MediaStream).active }));
   expect(camera).toEqual({ requests: 1, stops: 0, active: true });
   await expect(page.getByRole("region", { name: "Final delivery report" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Finish checking delivery", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Finish"));
   await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("All ordered quantities are complete.");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Delivery checking complete. All ordered products and quantities were received."))).toBe(true);
 });

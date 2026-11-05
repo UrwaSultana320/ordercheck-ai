@@ -63,6 +63,20 @@ describe("speech and command coordination (mocked services)", () => {
     );
     f.controller.stop();
   });
+  it("forces a result with narration disabled and listens only after it ends", async () => {
+    const f = fixture();
+    const done = f.controller.say("Product scanned successfully. LOVE JOJO Body Lotion. 1 of 2 received.", 3, true)
+      .then(() => f.controller.startListening());
+    expect(f.controller.enabled).toBe(false);
+    expect(f.speeches[0].text).toContain("LOVE JOJO Body Lotion. 1 of 2 received.");
+    expect(FakeRecognition.instances).toHaveLength(0);
+    f.speeches[0].onend?.({} as SpeechSynthesisEvent);
+    await done;
+    expect(FakeRecognition.instances).toHaveLength(1);
+    FakeRecognition.instances[0].result("Finish");
+    expect(f.events.command).toHaveBeenCalledWith("finish");
+    f.controller.stop();
+  });
   it("accepts final phrases only and ends the explicit listening window", () => {
     const f = fixture();
     f.controller.startListening();

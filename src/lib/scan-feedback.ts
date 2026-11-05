@@ -1,7 +1,7 @@
 import type { CheckState, Verdict } from "./engine";
 
-const instruction = "Move this product away. Say “Next” or tap “Scan next product” when you're ready.";
-const spokenInstruction = "Move this product away. Say Next when you are ready to scan another product.";
+const instruction = "Say “Next” to scan another product, or “Finish” if you're done.";
+const spokenInstruction = "Move this product away. Say Next when you're ready to scan another product, or say Finish if you're done.";
 const spokenSize = (size: string) => size.replace(/(\d+(?:\.\d+)?)\s*(ml|kg|g|l)\b/gi, (_, amount: string, unit: string) => {
   const name = ({ ml: "millilitre", kg: "kilogram", g: "gram", l: "litre" })[unit.toLowerCase()]!;
   return `${amount} ${name}${Number(amount) === 1 ? "" : "s"}`;

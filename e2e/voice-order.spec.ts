@@ -42,6 +42,7 @@ test("explicit confirmation of heard name saves an order and offers scanning wit
   await expect(scan).toBeFocused();
   await expect(scan).toBeInViewport();
   await scan.click();
+  await page.getByText("More options", { exact: true }).click();
   await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeVisible();
   await expect(page.getByText("Your camera is off", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { __micRequests: number }).__micRequests)).toBe(1);
@@ -81,6 +82,7 @@ test("empty Scan offers Create an order and reaches normal Scan after saving wit
   await review(page, "one soap");
   await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
   await page.getByRole("button", { name: "Scan this delivery", exact: true }).click();
+  if (await page.getByText("More options", { exact: true }).locator("..").getAttribute("open") === null) await page.getByText("More options", { exact: true }).click();
   await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Create an order", exact: true })).toHaveCount(0);
 });
@@ -438,7 +440,7 @@ for (const denied of [false, true]) {
     const before = await page.evaluate(() => ({ speeches: (window as unknown as { __spoken: string[] }).__spoken, saved: JSON.parse(sessionStorage.getItem("ordercheck.v2")!) }));
     expect(before.saved.orders[0].items[0]).toMatchObject({ name: "Head and shoulders anti-denture", quantity: 1 });
     expect(before.speeches).toContain("Order confirmed and saved. Opening the delivery scanner. Your browser may ask for camera permission.");
-    expect(before.speeches).not.toContain("Camera started. Hold one product in front of the camera.");
+    expect(before.speeches).not.toContain("Scanner ready. Present the first product.");
     expect(await page.evaluate(() => (window as unknown as { __cameraRequests: unknown[] }).__cameraRequests[0])).toEqual({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     // Simulate a mobile permission dialog taking focus/visibility, then Allow.
     await page.evaluate(() => {
@@ -446,6 +448,7 @@ for (const denied of [false, true]) {
       Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
       document.dispatchEvent(new Event("visibilitychange"));
     });
+    await page.getByText("More options", { exact: true }).click();
     await expect(page.getByRole("region", { name: "Session controls" })).toContainText("requesting permission");
     await page.evaluate(() => {
       Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -457,8 +460,8 @@ for (const denied of [false, true]) {
       await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
     } else {
       await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeEnabled();
-      await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("Camera started. Hold one product in front of the camera."))).toBe(true);
-      await expect(page.getByText("Place the front label inside the guide.", { exact: true })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("Scanner ready. Present the first product."))).toBe(true);
+      await expect(page.locator("#camera-guidance")).not.toBeEmpty();
       await expect(page.locator(".label-guide")).toBeVisible();
       await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     }

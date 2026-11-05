@@ -253,6 +253,10 @@ describe("command and presentation gates", () => {
   });
   it("accepts only exact final phrases and valid transitions", () => {
     expect(commandFrom(" Stop speaking! ")).toBe("stop speaking");
+    expect(commandFrom("Finish!")).toBe("finish");
+    expect(commandAllowed("finish", "awaiting-next-item")).toBe(true);
+    expect(commandAllowed("finish", "scanning")).toBe(true);
+    expect(commandAllowed("finish", "processing")).toBe(false);
     expect(commandFrom("please delete all orders and start")).toBeNull();
     expect(commandAllowed("next", "processing")).toBe(false);
     expect(commandAllowed("stop", "processing")).toBe(true);

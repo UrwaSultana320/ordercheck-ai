@@ -13,6 +13,8 @@ describe("human scan feedback", () => {
     expect(feedback.product).toBe("LOVE JOJO Body Lotion");
     expect(feedback.description).toBe("Vitamin C Whitening · 500 ml");
     expect(feedback.spoken).toContain("500 millilitres");
+    expect(feedback.spoken).toContain("say Finish");
+    expect(feedback.lines.join(" ")).toContain("“Finish”");
     expect(JSON.stringify(feedback)).not.toMatch(/DEMO_CATALOG|capture-uuid|catalog v1|Internal catalog|missing/i);
   });
   it.each(["MISMATCH", "INCOMPLETE", "CONFLICT"] as const)("explains %s without internal reasons", status => {

@@ -169,7 +169,7 @@ export class VoiceController {
         if (command) this.events.command(command);
         else
           this.events.error(
-            "Command not recognized. Use Start, Stop, Repeat, Next, Help or Retry, or the controls below.",
+            "Command not recognized. Use Start, Stop, Repeat, Next, Finish, Help or Retry, or the controls below.",
           );
         break;
       }

@@ -178,6 +178,92 @@ export default function Home() {
       "paused",
       "requesting-permission",
     ].includes(a.phase);
+  const sessionControls = (
+    <section className="panel" aria-label="Session controls">
+      <h2>Session controls</h2>
+      <p>
+        Session: {a.phase.replaceAll("-", " ")}. Camera:{" "}
+        {a.camera ? "on" : "off"}. Microphone:{" "}
+        {a.listening ? "listening" : "not listening"}. App speech:{" "}
+        {a.speaking ? "speaking" : "silent"}.
+      </p>
+      <div className="button-row">
+        <button
+          className="primary"
+          disabled={!a.ready}
+          onClick={() => void a.start()}
+        >
+          Start
+        </button>
+        <button
+          className="secondary"
+          aria-keyshortcuts="Escape"
+          onClick={stop}
+        >
+          Stop
+        </button>
+        <button className="secondary" disabled={composing} onClick={() => a.command("repeat")}>
+          Repeat
+        </button>
+        <button
+          className="secondary"
+          onClick={() => a.command("stop speaking")}
+        >
+          Stop speaking
+        </button>
+        <button
+          className="secondary"
+          disabled={composing}
+          onClick={() => a.command("read my orders")}
+        >
+          Read my orders
+        </button>
+        <button
+          className="secondary"
+          disabled={composing}
+          onClick={() => a.command("read the result again")}
+        >
+          Read the result again
+        </button>
+        <button
+          className="secondary"
+          onClick={() => a.navigate("overview")}
+        >
+          Go back
+        </button>
+      </div>
+      <label>
+        <input
+          type="checkbox"
+          checked={consent}
+          onChange={(e) => {
+            setConsent(e.target.checked);
+            if (!e.target.checked) a.stopListening();
+          }}
+        />{" "}
+        I understand voice commands may send audio to my browser provider
+        and need a network connection.
+      </label>
+      <p>
+        Start listening requests microphone permission when needed and
+        opens a command window of up to 15 seconds. Listening pauses
+        during app speech. Buttons and keyboard remain available.
+      </p>
+      <div className="button-row">
+        <button
+          className="secondary"
+          disabled={!consent || a.listening || composing}
+          onClick={a.startListening}
+        >
+          Start listening
+        </button>
+        <button className="secondary" onClick={a.stopListening}>
+          Stop listening
+        </button>
+      </div>
+    </section>
+  );
+
   return (
     <div
       data-text-size={a.prefs.size}
@@ -251,14 +337,14 @@ export default function Home() {
         <main id="main" tabIndex={-1}>
           <div className="page-heading">
             <div>
-              <p className="eyebrow">A LITTLE CERTAINTY IN EVERY DELIVERY</p>
+              {a.tab !== "scan" && <p className="eyebrow">A LITTLE CERTAINTY IN EVERY DELIVERY</p>}
               <h1 ref={heading} tabIndex={-1}>
                 {titles[a.tab]}
               </h1>
-              <p>
+              {a.tab !== "scan" && <p>
                 Compare the product label with your purchase reference. Keep
                 uncertain results visible.
-              </p>
+              </p>}
             </div>
           </div>
           {a.storageError && <p role="alert">{a.storageError}</p>}
@@ -680,14 +766,7 @@ export default function Home() {
             <>
               <div className="scan-layout">
                 <section className="panel">
-                  <h2>Your camera assistant</h2>
-                  <p>
-                    Camera access is only for scanning. Hold the phone steady
-                    with the rear camera toward one product. Follow the camera
-                    guidance and rotate the product slowly when asked. Say Next or tap Scan next product
-                    when ready. Repeated identities need
-                    confirmation.
-                  </p>
+                  <h2>{a.listening ? "Listening" : a.phase === "awaiting-next-item" ? "Waiting for next product" : a.phase === "announcing-result" ? "Product found" : a.camera ? "Scanning" : "Scanner ready"}</h2>
                   <div className="camera">
                     <video
                       ref={video}
@@ -705,66 +784,16 @@ export default function Home() {
                       </div>
                     )}
                   </div>
-                  <p>Place the front label inside the guide.</p>
-                  <p id="camera-guidance">{a.cameraGuidance}</p>
-                  <div className="button-row">
-                    <button
-                      className="primary"
-                      disabled={a.phase === "requesting-permission"}
-                      onClick={() => (a.camera ? stop() : void a.start())}
-                    >
-                      {a.camera ? "Stop camera" : "Start camera"}
-                    </button>
-                    <button
-                      className="secondary"
-                      disabled={
-                        !a.camera || a.phase !== "scanning" || !!a.pending
-                      }
-                      onClick={() => void a.ocr()}
-                    >
-                      Read label with OCR
-                    </button>
-                  </div>
-                  <p>
-                    Automatic OCR reads well-lit, steady, detailed snapshots, one at a time. Camera instructions speak during scanning, even when general narration is off. Guidance uses image detail to suggest framing; it cannot measure distance. During scanning, you can choose Read label with OCR.{" "}
-                    {a.ocrTime !== null &&
-                      `Last OCR job: ${a.ocrTime} ms on this device.`}{" "}
-                    Unknown codes require a readable label. The catalog contains
-                    demonstration products only.
-                  </p>
+                  <p id="camera-guidance">{a.phase === "awaiting-next-item" ? "Say Next when you’re ready, or Finish if you’re done." : a.cameraGuidance}</p>
                 </section>
                 <section className="panel">
-                  <span className="mini-label">YOUR CHECKING RESULT</span>
+                  <span className="mini-label">Latest result</span>
                   <h2>{a.feedback?.title ?? "Ready for your first item"}</h2>
                   {a.feedback ? <>
                     {a.feedback.product && <p><strong>{a.feedback.product}</strong></p>}
                     {a.feedback.description && <p>{a.feedback.description}</p>}
                     {a.feedback.lines.map(line => <p key={line}>{line}</p>)}
                   </> : <p>Show one product to check it against your order.</p>}
-                  <details>
-                    <summary>Technical details (testing)</summary>
-                    <section className="scanner-diagnostics" aria-label="Physical test diagnostics">
-                      <h3>Physical test diagnostics (temporary)</h3>
-                      <p>Scanner phase: {a.phase}</p>
-                      <p>Live barcode attempts: {a.diagnostics.liveBarcodeAttempts}</p>
-                      <p>Last barcode decode status: {a.diagnostics.lastBarcodeDecodeStatus}</p>
-                      <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
-                      <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
-                      <p>OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}</p>
-                      <p>OCR attempts: {a.diagnostics.ocrAttempts}</p>
-                      <p>Last OCR confidence: {a.diagnostics.ocrConfidence ?? "none"}</p>
-                      <p>Last OCR text: <span data-testid="raw-ocr-text">{a.diagnostics.ocrText || "none"}</span></p>
-                      <p>Verification result: {a.diagnostics.verification}</p>
-                    </section>
-                    {a.result && <>
-                      <p>{a.result.message}</p>
-                      <p>Reason: {a.result.reason}</p>
-                      {a.result.fields?.map(f => <p key={f.field}>{f.field}: {f.observed}. Source: {f.source}</p>)}
-                    </>}
-                    {a.data.attempts.map(event => <p key={event.id}>
-                      Capture: {event.captureId}. Result: {event.status}. Reason: {event.reason}. {event.message}
-                    </p>)}
-                  </details>
                   {a.pending?.verdict.candidates?.map((c) => (
                     <button
                       className="secondary"
@@ -781,9 +810,7 @@ export default function Home() {
                     >
                       <h3>Is this another physical unit?</h3>
                       <p>
-                        A barcode cannot distinguish identical packages. Your
-                        answer records quantity confirmation separately from
-                        identity evidence.
+                        Say “Yes another unit” or “No retry this unit”.
                       </p>
                       <button className="primary" onClick={a.confirmAnother}>
                         Yes, another unit
@@ -793,28 +820,6 @@ export default function Home() {
                       </button>
                     </section>
                   )}
-                  <div className="button-row">
-                    <button
-                      className="secondary"
-                      disabled={!commandAllowed("next", a.phase)}
-                      onClick={a.nextItem}
-                    >
-                      Scan next product
-                    </button>
-                    <button
-                      className="secondary"
-                      disabled={!commandAllowed("retry", a.phase)}
-                      onClick={a.retry}
-                    >
-                      Retry
-                    </button>
-                    <button
-                      className="secondary"
-                      disabled={!a.data.attempts.some((event) => !event.undone)}
-                      onClick={a.undo}
-                    >
-                      Undo last checking event
-                    </button>
                     <button
                       className="primary"
                       disabled={a.phase === "requesting-permission" || a.phase === "processing"}
@@ -822,67 +827,95 @@ export default function Home() {
                     >
                       Finish checking delivery
                     </button>
-                  </div>
-                  <hr />
-                  <h3>Use without a camera or voice</h3>
-                  <label>
-                    Enter a barcode
-                    <input
-                      value={barcode}
-                      onChange={(e) => setBarcode(e.target.value)}
-                      autoComplete="off"
-                    />
-                  </label>
-                  <button
-                    className="secondary"
-                    disabled={!barcode.trim() || !canCheck}
-                    onClick={() =>
-                      a.check({ barcode: barcode.trim(), source: "manual" })
-                    }
-                  >
-                    Check barcode
-                  </button>
-                  <label>
-                    Read a label
-                    <textarea
-                      value={manualText}
-                      onChange={(e) => setManualText(e.target.value)}
-                      placeholder="Enter exactly the observed product name, brand, variant and size"
-                    />
-                  </label>
-                  <button
-                    className="secondary"
-                    disabled={!manualText.trim() || !canCheck}
-                    onClick={() =>
-                      a.check({
-                        text: manualText,
-                        confidence: 100,
-                        source: "manual",
-                      })
-                    }
-                  >
-                    Compare entered label
-                  </button>
-                  <p className="hint">
-                    Entered label text is user-observed evidence, not machine
-                    OCR. Example demo code: DEMO-OAT-ORIGINAL-1L.
-                  </p>
+                  <details>
+                    <summary>More options</summary>
+                    <div className="button-row">
+                      <button
+                        className="primary"
+                        disabled={a.phase === "requesting-permission"}
+                        onClick={() => (a.camera ? stop() : void a.start())}
+                      >
+                        {a.camera ? "Stop camera" : "Start camera"}
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={
+                          !a.camera || a.phase !== "scanning" || !!a.pending
+                        }
+                        onClick={() => void a.ocr()}
+                      >
+                        Read label with OCR
+                      </button>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        className="secondary"
+                        disabled={!commandAllowed("next", a.phase)}
+                        onClick={a.nextItem}
+                      >
+                        Scan next product
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={!commandAllowed("retry", a.phase)}
+                        onClick={a.retry}
+                      >
+                        Retry
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={!a.data.attempts.some((event) => !event.undone)}
+                        onClick={a.undo}
+                      >
+                        Undo last checking event
+                      </button>
+                    </div>
+                    <hr />
+                    <h3>Use without a camera or voice</h3>
+                    <label>
+                      Enter a barcode
+                      <input
+                        value={barcode}
+                        onChange={(e) => setBarcode(e.target.value)}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <button
+                      className="secondary"
+                      disabled={!barcode.trim() || !canCheck}
+                      onClick={() =>
+                        a.check({ barcode: barcode.trim(), source: "manual" })
+                      }
+                    >
+                      Check barcode
+                    </button>
+                    <label>
+                      Read a label
+                      <textarea
+                        value={manualText}
+                        onChange={(e) => setManualText(e.target.value)}
+                        placeholder="Enter exactly the observed product name, brand, variant and size"
+                      />
+                    </label>
+                    <button
+                      className="secondary"
+                      disabled={!manualText.trim() || !canCheck}
+                      onClick={() =>
+                        a.check({
+                          text: manualText,
+                          confidence: 100,
+                          source: "manual",
+                        })
+                      }
+                    >
+                      Compare entered label
+                    </button>
+                    {sessionControls}
+                  </details>
                 </section>
               </div>
-              <section className="panel">
-                <h2>
-                  {a.phase === "finished"
-                    ? "Checking complete"
-                    : "Checking progress"}
-                </h2>
-                <p>
-                  {a.stats.matched} of {a.stats.total} ordered units matched and counted.{" "}
-                  {a.stats.left} ordered {a.stats.left === 1 ? "unit is" : "units are"} still expected.{" "}
-                  {a.stats.mismatch} wrong-product scans · {a.stats.unresolved} unable to verify.{" "}
-                  {a.stats.unknown} lines have unknown quantities.{" "}
-                  Wrong or unresolved scans do not reduce the remaining ordered quantity.
-                </p>
-                {a.phase === "finished" && (
+              {a.phase === "finished" && <section className="panel">
+                <h2>Checking complete</h2>
                   <section aria-label="Final delivery report">
                     <h3>Final delivery report</h3>
                     {a.report.lines.map((line) => (
@@ -903,17 +936,33 @@ export default function Home() {
                       </strong>
                     </p>
                   </section>
-                )}
-                {a.data.attempts
-                  .filter((event) => !event.undone)
-                  .map((event) => (
-                    <p key={event.id}>
-                      {event.status === "MATCH" ? "Product scanned successfully" : event.status === "MISMATCH" ? "Product does not match. Nothing was counted." : "Product could not be verified. Nothing was counted."}{" "}
-                      {event.confirmedAnotherUnit
-                        ? "Another physical unit confirmed by user."
-                        : ""}
-                    </p>
-                  ))}
+              </section>}
+              <section className="panel">
+                  <details>
+                    <summary>Technical details</summary>
+                    <section className="scanner-diagnostics" aria-label="Physical test diagnostics">
+                      <h3>Physical test diagnostics (temporary)</h3>
+                      <p>Scanner phase: {a.phase}</p>
+                      <p>Live barcode attempts: {a.diagnostics.liveBarcodeAttempts}</p>
+                      <p>Last barcode decode status: {a.diagnostics.lastBarcodeDecodeStatus}</p>
+                      <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
+                      <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
+                      <p>OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}</p>
+                      <p>OCR attempts: {a.diagnostics.ocrAttempts}</p>
+                      <p>Last OCR job: {a.ocrTime === null ? "none" : `${a.ocrTime} ms`}</p>
+                      <p>Last OCR confidence: {a.diagnostics.ocrConfidence ?? "none"}</p>
+                      <p>Last OCR text: <span data-testid="raw-ocr-text">{a.diagnostics.ocrText || "none"}</span></p>
+                      <p>Verification result: {a.diagnostics.verification}</p>
+                    </section>
+                    {a.result && <>
+                      <p>{a.result.message}</p>
+                      <p>Reason: {a.result.reason}</p>
+                      {a.result.fields?.map(f => <p key={f.field}>{f.field}: {f.observed}. Source: {f.source}</p>)}
+                    </>}
+                    {a.data.attempts.map(event => <p key={event.id}>
+                      Capture: {event.captureId}. Result: {event.status}. Reason: {event.reason}. {event.message}
+                    </p>)}
+                  </details>
               </section>
             </>
           ))}
@@ -945,7 +994,7 @@ export default function Home() {
               </fieldset>
               <p>
                 Screen-reader mode keeps semantic text and restrained live
-                updates with no automatic app speech. The app never detects or
+                updates. Critical scan results and delivery summaries always speak. The app never detects or
                 controls your screen reader. App spoken guidance pauses
                 recognition while speaking. Stop speaking and Stop remain
                 available.
@@ -1014,16 +1063,16 @@ export default function Home() {
                   automatic OCR try, or choose Read label with OCR.
                 </li>
                 <li>
-                  Read the result or opt into app spoken guidance. Say Next or tap Scan next product when ready. For identical
+                  OrderCheck speaks the result automatically. Say Next or tap Scan next product when ready. For identical
                   products, confirm another unit. Retry updates one attempt.
                   Undo reverses its event.
                 </li>
               </ol>
               <h2>Commands and equivalent controls</h2>
               <p>
-                Start, Stop, Repeat, Next, Help, Retry, Read my orders, Read the
+                Start, Stop, Repeat, Next, Finish, Help, Retry, Read my orders, Read the
                 result again, Go back, Stop speaking. Only final, exact command
-                phrases are accepted in a valid state. Choose Start listening
+                phrases are accepted in a valid state. After each result, OrderCheck listens automatically
                 for one window of up to 15 seconds. It ends after a command,
                 silence or service failure. No background or locked-phone
                 operation is promised.
@@ -1060,8 +1109,8 @@ export default function Home() {
                 or AI service is added. Voice recognition may send audio to a
                 browser-vendor service and may need a network connection. Enable
                 it only after reading the disclosure. Camera needs
-                HTTPS/localhost; microphone is requested only when you
-                explicitly start listening.
+                HTTPS/localhost; microphone is requested after spoken scan results or when you
+                choose Listen for a command.
               </p>
               <p>
                 Orders stay in memory unless you opt into tab-session storage.
@@ -1078,89 +1127,7 @@ export default function Home() {
               </p>
             </section>
           )}
-          <section className="panel" aria-label="Session controls">
-            <h2>Session controls</h2>
-            <p>
-              Session: {a.phase.replaceAll("-", " ")}. Camera:{" "}
-              {a.camera ? "on" : "off"}. Microphone:{" "}
-              {a.listening ? "listening" : "not listening"}. App speech:{" "}
-              {a.speaking ? "speaking" : "silent"}.
-            </p>
-            <div className="button-row">
-              <button
-                className="primary"
-                disabled={!a.ready}
-                onClick={() => void a.start()}
-              >
-                Start
-              </button>
-              <button
-                className="secondary"
-                aria-keyshortcuts="Escape"
-                onClick={stop}
-              >
-                Stop
-              </button>
-              <button className="secondary" disabled={composing} onClick={() => a.command("repeat")}>
-                Repeat
-              </button>
-              <button
-                className="secondary"
-                onClick={() => a.command("stop speaking")}
-              >
-                Stop speaking
-              </button>
-              <button
-                className="secondary"
-                disabled={composing}
-                onClick={() => a.command("read my orders")}
-              >
-                Read my orders
-              </button>
-              <button
-                className="secondary"
-                disabled={composing}
-                onClick={() => a.command("read the result again")}
-              >
-                Read the result again
-              </button>
-              <button
-                className="secondary"
-                onClick={() => a.navigate("overview")}
-              >
-                Go back
-              </button>
-            </div>
-            <label>
-              <input
-                type="checkbox"
-                checked={consent}
-                onChange={(e) => {
-                  setConsent(e.target.checked);
-                  if (!e.target.checked) a.stopListening();
-                }}
-              />{" "}
-              I understand voice commands may send audio to my browser provider
-              and need a network connection.
-            </label>
-            <p>
-              Start listening requests microphone permission when needed and
-              opens a command window of up to 15 seconds. Listening pauses
-              during app speech. Buttons and keyboard remain available.
-            </p>
-            <div className="button-row">
-              <button
-                className="secondary"
-                disabled={!consent || a.listening || composing}
-                onClick={a.startListening}
-              >
-                Start listening
-              </button>
-              <button className="secondary" onClick={a.stopListening}>
-                Stop listening
-              </button>
-            </div>
-          </section>
+          {a.tab !== "scan" && sessionControls}
           <section className="session-controls" aria-label="Privacy controls">
             <label>
               <input
@@ -1201,7 +1168,7 @@ export default function Home() {
           <AudioLines aria-hidden="true" />
           <span
             role="status"
-            aria-live={a.prefs.spoken ? "off" : "polite"}
+            aria-live={a.tab === "scan" || !a.prefs.spoken ? "polite" : "off"}
             aria-atomic="true"
           >
             <span key={a.noticeId}>{a.message}</span>

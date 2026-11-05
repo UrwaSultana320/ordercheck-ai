@@ -735,10 +735,13 @@ export function useAssistant(
     if (seen && !old) {
       pendingTo({ evidence, verdict, another: true, retry: retryId.current });
       phaseTo("needs-clarification");
+      const epoch = generation.current;
       void announce(
-        "Is this another physical unit? A barcode or label cannot distinguish identical packages. Choose Yes, another unit, or No, retry this unit.",
-        3,
-      );
+        "Is this another physical unit? Say Yes another unit, or No retry this unit.",
+        3, true,
+      ).then(() => {
+        if (mounted.current && epoch === generation.current && phaseRef.current === "needs-clarification") voice.current?.startListening();
+      });
       return;
     }
     commit({ evidence, verdict, another: false, retry: retryId.current });
@@ -783,17 +786,19 @@ export function useAssistant(
       : feedback.lines.join(" "));
     phaseTo("announcing-result");
     const epoch = generation.current;
-    void announce(feedback.spoken, 3).then(() => {
+    void announce(feedback.spoken, 3, true).then(() => {
       if (
         mounted.current &&
         epoch === generation.current &&
         phaseRef.current === "announcing-result"
       ) {
         phaseTo("awaiting-next-item");
+        voice.current?.startListening();
       }
     });
   }
   function nextItem() {
+    voice.current?.stopListening();
     pendingTo(null);
     retryId.current = undefined;
     gate.current.next();
@@ -802,10 +807,11 @@ export function useAssistant(
     phaseTo(stream.current ? "scanning" : "awaiting-next-item");
     setCameraGuidance("Ready. Present the next product.");
     void announce(
-      "Ready. Present the next product.",
+      "Ready. Present the next product.", 1, true,
     );
   }
   function retry() {
+    voice.current?.stopListening();
     const p = pendingRef.current;
     const last = [...dataRef.current.attempts]
       .reverse()
@@ -828,6 +834,7 @@ export function useAssistant(
     );
   }
   function finishChecking() {
+    voice.current?.stopListening();
     const report = deliveryReport(dataRef.current);
     releaseCamera();
     pendingTo(null);
@@ -835,18 +842,17 @@ export function useAssistant(
     phaseTo("finished");
     const missing = report.lines.filter((line) => line.status === "missing");
     const unknown = report.lines.filter((line) => line.status === "unknown");
-    const complete = report.lines.filter((line) => line.status === "complete");
     const details = [
       ...missing.map((line) =>
-        `${line.product}: ordered ${line.ordered}, scanned ${line.scanned}, missing ${line.missing}.`,
+        `${line.product}: ${line.ordered} ordered, ${line.scanned} received, ${line.missing} missing.`,
       ),
       ...unknown.map((line) =>
         `${line.product}: ordered quantity is unknown, scanned ${line.scanned}.`,
       ),
     ].join(" ");
     const summary = missing.length || unknown.length
-      ? `Delivery check finished. ${complete.length} product lines complete. ${report.missingUnits} ordered units missing. ${unknown.length} lines have unknown quantities. ${details}`
-      : `Delivery check finished. All ${complete.length} product lines are complete. No ordered units are missing.`;
+      ? `Delivery checking complete. ${details} ${report.missingUnits} ordered ${report.missingUnits === 1 ? "item is" : "items are"} missing.${unknown.length ? ` ${unknown.length} products have unknown quantities.` : ""}`
+      : "Delivery checking complete. All ordered products and quantities were received.";
     void announce(summary, 3, true);
   }
 
@@ -879,8 +885,13 @@ export function useAssistant(
           c === "read the result again"
             ? (result ? scanFeedback(result, dataRef.current).spoken : "No result yet.")
             : messageRef.current,
-          3,
-        );
+          3, true,
+        ).then(() => {
+          if (mounted.current && phaseRef.current === "awaiting-next-item") voice.current?.startListening();
+        });
+        break;
+      case "finish":
+        finishChecking();
         break;
       case "next":
         nextItem();
@@ -891,7 +902,7 @@ export function useAssistant(
       case "help":
         navigate("help");
         void announce(
-          "Commands: Start, Stop, Repeat, Next, Help, Retry, Read my orders, Read the result again, Go back, Stop speaking. Named controls offer equivalent actions. Recognition pauses during app speech.",
+          "Commands: Start, Stop, Repeat, Next, Finish, Help, Retry, Read my orders, Read the result again, Go back, Stop speaking. Named controls offer equivalent actions. Recognition pauses during app speech.",
         );
         break;
       case "read my orders":
