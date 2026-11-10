@@ -6,28 +6,124 @@ const spokenSize = (size: string) => size.replace(/(\d+(?:\.\d+)?)\s*(ml|kg|g|l)
   const name = ({ ml: "millilitre", kg: "kilogram", g: "gram", l: "litre" })[unit.toLowerCase()]!;
   return `${amount} ${name}${Number(amount) === 1 ? "" : "s"}`;
 });
+const compact = (parts: (string | undefined)[]) =>
+  parts.map(part => part?.trim()).filter(Boolean).join(", ");
+const displayCompact = (parts: (string | undefined)[]) =>
+  parts.map(part => part?.trim()).filter(Boolean).join(" · ");
 
-// Presentation only: counts come from the existing recorded order state.
 export function scanFeedback(verdict: Verdict, state: CheckState) {
+  const item = state.orders
+    .find(order => order.id === verdict.orderId)
+    ?.items.find(item => item.id === verdict.itemId);
+  const field = (name: string) =>
+    verdict.fields?.find(field => field.field === name)?.observed;
+
+  const receivedProduct = [field("brand"), field("name")].filter(Boolean).join(" ");
+  const receivedVariant = field("variant") ?? "";
+  const receivedSize = field("size") ?? "";
+  const receivedDisplay = compact([
+    receivedProduct || undefined,
+    receivedVariant || undefined,
+    receivedSize || undefined,
+  ]);
+  const receivedSpoken = compact([
+    receivedProduct || undefined,
+    receivedVariant || undefined,
+    receivedSize ? spokenSize(receivedSize) : undefined,
+  ]);
+
+  const expectedProduct = item
+    ? [item.brand, item.name].filter(Boolean).join(" ")
+    : "";
+  const expectedDisplay = item
+    ? compact([
+        expectedProduct || undefined,
+        item.variant || undefined,
+        item.size || undefined,
+      ])
+    : "";
+  const expectedSpoken = item
+    ? compact([
+        expectedProduct || undefined,
+        item.variant || undefined,
+        item.size ? spokenSize(item.size) : undefined,
+      ])
+    : "";
+
   if (verdict.status !== "MATCH") {
     const mismatch = verdict.status === "MISMATCH";
-    const message = mismatch
-      ? "This product does not match the expected order item. Nothing was counted."
-      : "I couldn't verify this product yet. Nothing was counted. Try again or show another side of the label.";
-    return { title: mismatch ? "Product does not match" : "Unable to verify this product", product: "", description: "", lines: [message], spoken: message };
+    if (mismatch) {
+      const lines = [
+        expectedDisplay ? `Ordered: ${expectedDisplay}.` : "",
+        receivedDisplay ? `Received: ${receivedDisplay}.` : "",
+        "This product does not match the expected order item. Nothing was counted.",
+      ].filter(Boolean);
+      const comparison = [
+        expectedSpoken ? `You ordered ${expectedSpoken}.` : "",
+        receivedSpoken ? `You received ${receivedSpoken}.` : "",
+      ].filter(Boolean).join(" ");
+      const spoken = `Mismatch. ${comparison} This product does not match your order. Nothing was counted.`
+        .replace(/\s+/g, " ")
+        .trim();
+      return {
+        title: "Product does not match",
+        product: receivedProduct,
+        description: displayCompact([receivedVariant, receivedSize]),
+        lines,
+        spoken,
+      };
+    }
+
+    const message = "I couldn't verify this product yet. Nothing was counted. Try again or show another side of the label.";
+    return {
+      title: "Unable to verify this product",
+      product: "",
+      description: "",
+      lines: [message],
+      spoken: message,
+    };
   }
-  const item = state.orders.find(order => order.id === verdict.orderId)?.items.find(item => item.id === verdict.itemId);
-  const field = (name: string) => verdict.fields?.find(field => field.field === name)?.observed;
-  const product = [field("brand") ?? item?.brand, field("name") ?? item?.name].filter(Boolean).join(" ");
-  const variant = field("variant") ?? item?.variant ?? "";
-  const size = field("size") ?? item?.size ?? "";
-  const description = [variant, size].filter(Boolean).join(" · ");
-  const received = item?.quantity != null ? `${item.verified} of ${item.quantity} received.` : "Product received. Ordered quantity is unknown.";
-  const remaining = item?.quantity != null ? Math.max(0, item.quantity - item.verified) : null;
-  const completion = remaining === null ? "Check the ordered quantity before finishing." : remaining === 0 ? "This product is complete." : `${remaining} more ${remaining === 1 ? "is" : "are"} still expected.`;
+
+  const product = receivedProduct || expectedProduct;
+  const variant = receivedVariant || item?.variant || "";
+  const size = receivedSize || item?.size || "";
+  const description = displayCompact([variant, size]);
+  const received = item?.quantity != null
+    ? `${item.verified} of ${item.quantity} received.`
+    : "Product received. Ordered quantity is unknown.";
+  const remaining = item?.quantity != null
+    ? Math.max(0, item.quantity - item.verified)
+    : null;
+  const completion = remaining === null
+    ? "Check the ordered quantity before finishing."
+    : remaining === 0
+      ? "This product is complete."
+      : `${remaining} more ${remaining === 1 ? "is" : "are"} still expected.`;
+
+  const matchedReceivedDisplay = receivedDisplay || compact([
+    product || undefined,
+    variant || undefined,
+    size || undefined,
+  ]);
+  const matchedReceivedSpoken = receivedSpoken || compact([
+    product || undefined,
+    variant || undefined,
+    size ? spokenSize(size) : undefined,
+  ]);
+
   return {
-    title: "Product scanned successfully", product, description,
-    lines: [received, completion, instruction],
-    spoken: `${[product, variant, spokenSize(size)].filter(Boolean).join(", ")} scanned successfully. ${received} ${completion} ${spokenInstruction}`,
+    title: "Product scanned successfully",
+    product,
+    description,
+    lines: [
+      expectedDisplay ? `Ordered: ${expectedDisplay}.` : "",
+      matchedReceivedDisplay ? `Received: ${matchedReceivedDisplay}.` : "",
+      received,
+      completion,
+      instruction,
+    ].filter(Boolean),
+    spoken: `Match. ${expectedSpoken ? `You ordered ${expectedSpoken}. ` : ""}${matchedReceivedSpoken ? `You received ${matchedReceivedSpoken}. They match. ` : ""}${received} ${completion} ${spokenInstruction}`
+      .replace(/\s+/g, " ")
+      .trim(),
   };
 }
