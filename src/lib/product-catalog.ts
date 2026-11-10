@@ -5,9 +5,9 @@ const catalogProductSchema = z.object({
   id: z.string().min(1),
   barcode: z.string().min(1),
   name: z.string().min(1),
-  brand: z.string(),
-  variant: z.string(),
-  size: z.string(),
+  brand: z.string().nullable().transform((value) => value ?? ""),
+  variant: z.string().nullable().transform((value) => value ?? ""),
+  size: z.string().nullable().transform((value) => value ?? ""),
 });
 
 export type CatalogProduct = z.infer<typeof catalogProductSchema>;

@@ -92,7 +92,15 @@ Normal/large/extra-large text, high contrast, scalable system typography, visibl
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/roadmap.md](docs/roadmap.md). Both developers use separate clones of one private repository. Create a separate `urwa/<task>` or `abdullah/<task>` feature branch for every task, commit and push progress there, and open a PR into the remote default branch (`main` currently). Keep unfinished work in draft. Never commit or push directly to main/master. Require the other developer's approval and passing existing checks; agents never merge autonomously. Preserve existing developer branches and all local/remote work. No force-pushing shared history, secrets or customer files in Git. The final hackathon release requires explicit user approval before creation, tagging, publication or deployment.
 
-The existing Vercel Git integration builds Previews from this branch. Choose Next.js and Node 24. Only voice order transcription requires the server-side GROQ_API_KEY in Preview; typed orders and existing checks require no key. No production deployment or promotion is authorized. CI includes build, lint, type checking, Vitest, Playwright and axe. Branch protection requires repository permissions and a GitHub plan supporting protection for private repositories; see setup-status.json for the actual outcome.
+Vercel Preview deployments must be created explicitly; pushing this branch does not guarantee a deployment. Target the existing `ordercheck-ai` project, choose Preview, Next.js and Node 24, and wait for READY. Voice order transcription requires the server-side GROQ_API_KEY in Preview. No production deployment or promotion is authorized. CI includes build, lint, type checking, Vitest, Playwright and axe. Branch protection requires repository permissions and a GitHub plan supporting protection for private repositories; see setup-status.json for the actual outcome.
+
+### Supabase product catalog
+
+Supabase is used only for product lookup, with no authentication, accounts, saved orders or order history. Configure `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` for Vercel **Preview before creating a new deployment** so Next.js receives them at build time. `.env.example` lists the names for local setup; never commit values. Use only a publishable key, never service-role, secret or database credentials.
+
+Barcode lookup reads `public.products` by exact barcode with `active=eq.true`. The table has UUID `id`, unique non-null text `barcode`, non-null text `name`, nullable text `brand`, `variant`, `size`, boolean `active`, and timestamptz `created_at`. Nullable product fields become empty strings at the verification boundary. The database must enforce RLS and SELECT access only to active products; a client-side filter alone is not access control. This repository does not change the existing database policies.
+
+A found product is passed to the existing verification engine. A successful zero-row response continues to OCR without consulting the JSON catalog. Only Supabase configuration/request/response failures allow the local JSON emergency fallback. Technical details identify the product source. Automated fixtures cover these paths; they do not establish live database permissions or physical-scanner behavior.
 
 ## Remaining integrations
 
