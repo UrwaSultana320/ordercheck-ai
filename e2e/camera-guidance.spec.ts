@@ -238,7 +238,7 @@ test("stable high-quality snapshot barcode uses real ZXing, skips OCR and dedupl
   await expect.poll(() => page.evaluate(() => (window as unknown as { __snapshotReads: number }).__snapshotReads), { timeout: 15000 }).toBe(1);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Barcode detected. Checking this product."))).toBe(true);
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
-  await expect(page.getByRole("status")).toContainText(/scanned successfully/i);
+  await expect(page.getByRole("status")).toContainText(/They match/i);
   await page.waitForTimeout(3500);
   expect(await page.evaluate(() => (window as unknown as { __snapshotReads: number }).__snapshotReads)).toBe(1);
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
@@ -560,7 +560,7 @@ test("persistent commands, successful-result barge-in, Repeat, Next and Finish r
   await page.evaluate(() => { (window as unknown as { __holdSpeech: boolean }).__holdSpeech = true; });
   const before = await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.at(-1)!.text);
   await sayCommand(page, "repeat that");
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.filter(s => s.text.includes("scanned successfully.")).length)).toBe(2);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.filter(s => s.text.includes("They match.")).length)).toBe(2);
   expect(await page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.at(-1)!.text)).toBe(before);
   await sayCommand(page, "Next");
   await sayCommand(page, "Finish");
