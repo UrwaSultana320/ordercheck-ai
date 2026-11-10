@@ -163,6 +163,40 @@ describe("evidence-aware verification", () => {
     expect(verify([voiceOrder], { barcode: "4897099081562" }).status).toBe("MISMATCH");
   });
 
+
+  it("rejects a conflicting variant kept inside the spoken product name", () => {
+    const voiceOrder: Order = {
+      id: "voice",
+      label: "Voice order",
+      source: "voice",
+      items: [{
+        id: "love",
+        name: "Love Jojo Body Lotion Aloe Vera",
+        brand: "",
+        variant: "",
+        size: "500 ml",
+        quantity: 2,
+        verified: 0,
+      }],
+    };
+    const result = verify([voiceOrder], {
+      barcode: "4897099081562",
+      productLookup: "resolved",
+      productSource: "supabase",
+      product: {
+        id: "love-jojo-body-lotion-vitamin-c-500ml",
+        barcode: "4897099081562",
+        name: "Body Lotion",
+        brand: "LOVE JOJO",
+        variant: "Vitamin C Whitening",
+        size: "500 ml",
+      },
+    });
+    expect(result.status).toBe("MISMATCH");
+    expect(result.reason).toBe("DIFFERENT_PRODUCT");
+    expect(result.itemId).toBe("love");
+  });
+
   it("does not let a mismatch consume ordered quantity progress", () => {
     const state: CheckState = { orders: [order()], attempts: [] };
     const next = recordAttempt(state, {
