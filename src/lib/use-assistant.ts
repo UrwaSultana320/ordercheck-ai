@@ -1,0 +1,1032 @@
+"use client";
+import type { DecodeHintType as DecodeHint, BarcodeFormat as RetailFormat } from "@zxing/library";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  verify,
+  recordAttempt,
+  undoAttempt,
+  progress,
+  deliveryReport,
+  savedStateSchema,
+  sessionSchema,
+  type CheckState,
+  type Evidence,
+  type Verdict,
+  type Attempt,
+} from "./engine";
+import { scanFeedback } from "./scan-feedback";
+import { resolveProductByBarcode } from "./product-catalog";
+import { deliveryCameraConstraints, focusCamera, OcrReader } from "./media";
+import { analyzeFrame, BoundedAutomaticRead, AutomaticOcrViews, CameraGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
+import { orderStorage } from "./order-storage";
+import { newId } from "./id";
+import { VoiceController, browserVoiceHost } from "./voice";
+import {
+  PresentationGate,
+  commandAllowed,
+  type Command,
+  type SessionState,
+} from "./session";
+
+export type Tab = "overview" | "orders" | "scan" | "help" | "settings";
+export type Preferences = {
+  spoken: boolean;
+  size: "normal" | "large" | "extra-large";
+  contrast: boolean;
+  rate: number;
+};
+type Pending = {
+  evidence: Evidence;
+  verdict: Verdict;
+  another: boolean;
+  retry?: string;
+};
+const initial: CheckState = { orders: [], attempts: [] };
+export function useAssistant(
+  video: RefObject<HTMLVideoElement | null>,
+  heading: RefObject<HTMLHeadingElement | null>,
+) {
+  const [tab, setTab] = useState<Tab>("overview");
+  const [data, setData] = useState<CheckState>(initial),
+    dataRef = useRef(data);
+  const [prefs, setPrefs] = useState<Preferences>({
+    spoken: false,
+    size: "normal",
+    contrast: false,
+    rate: 0.95,
+  });
+  const [ready, setReady] = useState(false),
+    [remember, setRemember] = useState(false);
+  const [storageError, setStorageError] = useState("");
+  const [message, setMessage] = useState("Loading saved orders…"),
+    messageRef = useRef(message);
+  const [noticeId, setNoticeId] = useState(0);
+  const [phase, setPhase] = useState<SessionState>("idle"),
+    phaseRef = useRef<SessionState>("idle");
+  const [listening, setListening] = useState(false),
+    [speaking, setSpeaking] = useState(false);
+  const [camera, setCamera] = useState(false),
+    [result, setResult] = useState<Verdict | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null),
+    pendingRef = useRef<Pending | null>(null);
+  const retryId = useRef<string | undefined>(undefined);
+  const [cameraGuidance, setCameraGuidance] = useState("");
+  const [ocrTime, setOcrTime] = useState<number | null>(null);
+  // Temporary physical-benchmark diagnostics. Preserve worker output verbatim.
+  const [diagnostics, setDiagnostics] = useState({
+    barcode: null as string | null,
+    barcodeKnown: "not checked" as "yes" | "no" | "not checked",
+    productSource: "not checked" as "supabase" | "local-fallback" | "not checked",
+    liveBarcodeAttempts: 0,
+    lastBarcodeDecodeStatus: "searching" as "searching" | "detected",
+    ocrAttempts: 0,
+    ocrConfidence: null as number | null,
+    ocrText: null as string | null,
+    verification: "not checked" as "match" | "mismatch" | "unable" | "not checked",
+  });
+  const voice = useRef<VoiceController | null>(null),
+    stream = useRef<MediaStream | null>(null);
+  const controls = useRef<{ stop(): void } | null>(null),
+    reader = useRef<OcrReader | null>(null);
+  const snapshotDecoder = useRef<{
+    decodeFromCanvas(canvas: HTMLCanvasElement): { getText(): string };
+  } | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null),
+    ocrBusy = useRef(false);
+  const generation = useRef(0),
+    sessionId = useRef(""),
+    mounted = useRef(false);
+  const gate = useRef(new PresentationGate());
+  const ocrViews = useRef(new AutomaticOcrViews());
+  const ocrRecovery = useRef("");
+  const actions = useRef<{
+    command(c: Command): void | Promise<void>;
+    stop(): void;
+    check(e: Evidence): void;
+    ocr(automatic?: boolean): Promise<void>;
+  } | null>(null);
+  function phaseTo(next: SessionState) {
+    phaseRef.current = next;
+    setPhase(next);
+  }
+  function update(next: CheckState) {
+    dataRef.current = next;
+    setData(next);
+  }
+  function announce(s: string, priority = 1, explicit = false) {
+    if (priority === 0 && messageRef.current === s) return Promise.resolve();
+    messageRef.current = s;
+    setMessage(s);
+    setNoticeId((n) => n + 1);
+    return voice.current?.say(s, priority, explicit) ?? Promise.resolve();
+  }
+  function pendingTo(next: Pending | null) {
+    pendingRef.current = next;
+    setPending(next);
+  }
+  function releaseCamera() {
+    generation.current++;
+    controls.current?.stop();
+    controls.current = null;
+    snapshotDecoder.current = null;
+    stream.current?.getTracks().forEach((t) => t.stop());
+    stream.current = null;
+    if (video.current) video.current.srcObject = null;
+    if (timer.current) clearInterval(timer.current);
+    timer.current = null;
+    reader.current?.close();
+    reader.current = null;
+    ocrBusy.current = false;
+    setCamera(false);
+    setCameraGuidance("");
+    ocrViews.current = new AutomaticOcrViews();
+    ocrRecovery.current = "";
+  }
+  function stop() {
+    releaseCamera();
+    voice.current?.stop();
+    pendingTo(null);
+    retryId.current = undefined;
+    phaseTo("paused");
+    messageRef.current =
+      "Stopped scanning and listening. Confirmed results are preserved.";
+    setMessage(messageRef.current);
+  }
+  function navigate(next: Tab) {
+    if (next !== "scan") {
+      releaseCamera();
+      if (
+        [
+          "scanning",
+          "processing",
+          "requesting-permission",
+          "announcing-result",
+        ].includes(phaseRef.current)
+      )
+        phaseTo("paused");
+    }
+    voice.current?.stopListening();
+    setTab(next);
+    requestAnimationFrame(() => heading.current?.focus());
+  }
+  useEffect(() => {
+    actions.current = { command, stop, check, ocr };
+  });
+  useEffect(() => {
+    mounted.current = true;
+    voice.current = new VoiceController(browserVoiceHost(), {
+      command: (c) => actions.current?.command(c),
+      listening: setListening,
+      speaking: setSpeaking,
+      error: (s) => {
+        if (mounted.current) {
+          messageRef.current = s;
+          setMessage(s);
+        }
+      },
+    });
+    queueMicrotask(() => {
+      if (!mounted.current) return;
+      try {
+        const raw = orderStorage.getPreference();
+        if (raw) {
+          const p = JSON.parse(raw);
+          setPrefs({
+            spoken: p.spoken === true,
+            contrast: p.contrast === true,
+            size: ["normal", "large", "extra-large"].includes(p.size)
+              ? p.size
+              : "normal",
+            rate:
+              typeof p.rate === "number" && p.rate >= 0.6 && p.rate <= 1.4
+                ? p.rate
+                : 0.95,
+          });
+        }
+      } catch {
+        setStorageError(
+          "Preferences could not be loaded; controls still work for this visit.",
+        );
+      }
+      try {
+        const saved = orderStorage.getSession(),
+          legacy = orderStorage.getLegacySession();
+        if (saved || legacy) {
+          const parsed = saved
+            ? savedStateSchema.parse(JSON.parse(saved))
+            : {
+                orders: sessionSchema.parse(JSON.parse(legacy!)),
+                attempts: [],
+              };
+          dataRef.current = parsed;
+          setData(parsed);
+          setRemember(true);
+        }
+      } catch {
+        setStorageError(
+          "Saved orders could not be loaded. Stored data was preserved; you can import a reference for this visit.",
+        );
+      }
+      setReady(true);
+      setMessage(
+        "Ready. Start checking, or add your purchase reference first.",
+      );
+    });
+    // Browser/OS permission UI can temporarily blur or hide this document.
+    // Keep the same pending getUserMedia request alive; explicit Stop, Escape,
+    // navigation and unmount still cancel it. Running cameras retain cleanup.
+    const interrupt = () => {
+      if (phaseRef.current !== "requesting-permission") actions.current?.stop();
+    };
+    const pause = () => {
+      if (document.visibilityState !== "visible") { voice.current?.stop(); interrupt(); }
+    };
+    const blur = () => {
+      if (document.visibilityState !== "visible") { voice.current?.stop(); interrupt(); }
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") actions.current?.stop();
+    };
+    document.addEventListener("visibilitychange", pause);
+    window.addEventListener("blur", blur);
+    window.addEventListener("keydown", escape);
+    const invalidatePendingCaptures = () => {
+      generation.current++;
+    };
+    return () => {
+      mounted.current = false;
+      invalidatePendingCaptures();
+      voice.current?.stop();
+      controls.current?.stop();
+      stream.current?.getTracks().forEach((t) => t.stop());
+      if (timer.current) clearInterval(timer.current);
+      reader.current?.close();
+      document.removeEventListener("visibilitychange", pause);
+      window.removeEventListener("blur", blur);
+      window.removeEventListener("keydown", escape);
+    };
+  }, []);
+  useEffect(() => {
+    if (voice.current) {
+      voice.current.enabled = prefs.spoken;
+      voice.current.rate = prefs.rate;
+      if (!prefs.spoken) voice.current.cancelSpeech();
+    }
+    if (ready)
+      try {
+        orderStorage.setPreference(JSON.stringify(prefs));
+      } catch {
+        queueMicrotask(() =>
+          setStorageError(
+            "Preferences cannot be saved; they apply for this visit.",
+          ),
+        );
+      }
+  }, [prefs, ready]);
+  useEffect(() => {
+    if (ready && remember)
+      try {
+        orderStorage.setSession(JSON.stringify(data));
+      } catch {
+        queueMicrotask(() =>
+          setStorageError(
+            "Orders could not be saved in this tab. They remain until you close or reload it.",
+          ),
+        );
+      }
+  }, [data, remember, ready]);
+  function storageOff() {
+    setRemember(false);
+    try {
+      orderStorage.clearSession();
+    } catch {
+      setStorageError(
+        "Storage could not be cleared. Use browser site-data controls.",
+      );
+    }
+  }
+  async function start(spokenConfirm = false) {
+    if (!ready) return;
+    if (!dataRef.current.orders.length) {
+      navigate("orders");
+      phaseTo("awaiting-reference");
+      void announce(
+        "Welcome. No purchase reference yet. Tell OrderCheck what you ordered, then review and confirm. Receipt import remains available under Other ways to add an order.",
+      );
+      return;
+    }
+    navigate("scan");
+    const opening = announce(spokenConfirm
+      ? "Order confirmed and saved. Opening the delivery scanner. Your browser may ask for camera permission."
+      : "Opening the delivery scanner. Your browser may ask for camera permission.", 1, true);
+    const intent = ++generation.current;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await opening;
+    if (mounted.current && intent === generation.current) await startCamera();
+  }
+  async function startCamera() {
+    if (stream.current) { voice.current?.startListening(false); return; }
+    if (phaseRef.current === "requesting-permission") return;
+    const epoch = ++generation.current;
+    sessionId.current = newId();
+    gate.current = new PresentationGate();
+    phaseTo("requesting-permission");
+    setCameraGuidance("Camera starting. Looking for a barcode or readable label.");
+    try {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
+        throw new Error(
+          "Camera requires HTTPS or localhost and a supported browser.",
+        );
+      const acquired = await navigator.mediaDevices.getUserMedia(deliveryCameraConstraints);
+      if (!mounted.current || epoch !== generation.current) {
+        acquired.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      stream.current = acquired;
+      await focusCamera(acquired.getVideoTracks()[0]);
+      const { BrowserMultiFormatReader, HTMLCanvasElementLuminanceSource } = await import("@zxing/browser");
+      const { DecodeHintType, BarcodeFormat, BinaryBitmap, HybridBinarizer } = await import("@zxing/library");
+      if (epoch !== generation.current || !video.current) {
+        acquired.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const hints = new Map<DecodeHint, boolean | RetailFormat[]>([
+        [DecodeHintType.TRY_HARDER, true],
+        [DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.EAN_13, BarcodeFormat.EAN_8,
+          BarcodeFormat.UPC_A, BarcodeFormat.UPC_E,
+        ]],
+      ]);
+      const decoder = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 150,
+        delayBetweenScanSuccess: 150,
+      });
+      // @zxing/browser 0.2.1 rotates its buffer but retains the old width/height.
+      // Give OneDReader's TRY_HARDER retry a source with the rotated dimensions.
+      decoder.decodeFromCanvas = (canvas) => {
+        const source = new HTMLCanvasElementLuminanceSource(canvas);
+        source.rotateCounterClockwise = () => {
+          const rotated = document.createElement("canvas");
+          rotated.width = canvas.height;
+          rotated.height = canvas.width;
+          const context = rotated.getContext("2d", { willReadFrequently: true });
+          if (!context) throw new Error("Could not create barcode rotation context.");
+          context.translate(0, canvas.width);
+          context.rotate(-Math.PI / 2);
+          context.drawImage(canvas, 0, 0);
+          return new HTMLCanvasElementLuminanceSource(rotated);
+        };
+        return decoder.decodeBitmap(new BinaryBitmap(new HybridBinarizer(source)));
+      };
+      // Snapshot/OCR decoding retains its existing formats and behavior.
+      snapshotDecoder.current = new BrowserMultiFormatReader();
+      setDiagnostics(d => ({ ...d, liveBarcodeAttempts: 0, lastBarcodeDecodeStatus: "searching" }));
+      const control = await decoder.decodeFromStream(
+        acquired,
+        video.current,
+        (found) => {
+          if (epoch !== generation.current || !mounted.current || phaseRef.current !== "scanning") return;
+          // ZXing calls back after each actual attempt, including NotFound.
+          setDiagnostics(d => ({ ...d, liveBarcodeAttempts: d.liveBarcodeAttempts + 1,
+            lastBarcodeDecodeStatus: found ? "detected" : "searching" }));
+          if (
+            !found ||
+            epoch !== generation.current ||
+            !mounted.current ||
+            phaseRef.current !== "scanning"
+          )
+            return;
+          const code = found.getText();
+          if (!gate.current.accept(`lookup:${code}`)) return;
+          setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "not checked", productSource: "not checked" }));
+          phaseTo("processing");
+          setCameraGuidance("Barcode detected. Checking this product.");
+          void announce("Barcode detected. Checking this product.", 1, true).then(async () => {
+            if (epoch !== generation.current || !mounted.current) return;
+            const resolved = await resolveProductByBarcode(code);
+            if (epoch !== generation.current || !mounted.current) return;
+            if (resolved.status === "found") {
+              setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "yes", productSource: resolved.source }));
+              actions.current?.check({
+                barcode: code,
+                product: resolved.product,
+                productSource: resolved.source,
+                productLookup: "resolved",
+                captureId: newId(),
+                sessionId: sessionId.current,
+                source: "barcode",
+                presentationId: `${sessionId.current}:${gate.current.epoch}`,
+              });
+              return;
+            }
+            setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "no", productSource: "not checked" }));
+            const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
+            setCameraGuidance(instruction);
+            await announce(instruction, 1, true);
+            if (epoch !== generation.current || !mounted.current) return;
+            phaseTo("scanning");
+            void actions.current?.ocr(true);
+          });
+        },
+      );
+      if (epoch !== generation.current) {
+        control.stop();
+        acquired.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      controls.current = control;
+      reader.current = new OcrReader();
+      setCamera(true);
+      phaseTo("scanning");
+      voice.current?.startListening(false);
+      setCameraGuidance(GUIDANCE.started);
+      const analysis = document.createElement("canvas");
+      analysis.width = 96;
+      analysis.height = 72;
+      const ctx = analysis.getContext("2d", { willReadFrequently: true });
+      const tiny = document.createElement("canvas");
+      tiny.width = tiny.height = 16;
+      const tinyContext = tiny.getContext("2d", { willReadFrequently: true });
+      const guidance = new CameraGuidance();
+      const boundedRead = new BoundedAutomaticRead();
+      const announcements = new GuidanceAnnouncements();
+      let previous: Float32Array | undefined;
+      let analysisFailed = false;
+      let guidanceSpeaking = true;
+      void announce(GUIDANCE.started, 1, true).finally(() => { guidanceSpeaking = false; });
+      timer.current = setInterval(() => {
+        const v = video.current;
+        if (!v?.videoWidth || epoch !== generation.current ||
+          document.visibilityState !== "visible") return;
+        const scanning = !ocrBusy.current &&
+          phaseRef.current === "scanning";
+        if (!scanning) { guidance.reset(); boundedRead.reset(); return; }
+        if (analysisFailed) return;
+        try {
+          if (!ctx || !tinyContext) throw new Error("Canvas unavailable");
+          ctx.drawImage(v, 0, 0, 96, 72);
+          const frame = analyzeFrame(ctx.getImageData(0, 0, 96, 72).data, 96, 72, previous);
+          previous = frame.luminance;
+          // Preserve the existing presentation/duplicate boundary independently.
+          tinyContext.drawImage(v, 0, 0, 16, 16);
+          const rgba = tinyContext.getImageData(0, 0, 16, 16).data;
+          const pixels = Array.from({ length: 256 }, (_, i) =>
+            (rgba[i * 4] + rgba[i * 4 + 1] + rgba[i * 4 + 2]) / 3);
+          gate.current.sample(pixels);
+          if (!scanning) return;
+          ocrViews.current.observe(frame.luminance);
+          const quality = guidance.sample(frame.metrics);
+          const fallback = boundedRead.sample(frame.metrics, performance.now());
+          if ((quality.ready || fallback) && ocrViews.current.canAttempt()) {
+            void actions.current?.ocr(true);
+          } else {
+            // Recovery stays visible on the unreadable view until repositioned;
+            // otherwise visuals follow state immediately, independently of speech.
+            const message = ocrRecovery.current && !ocrViews.current.canAttempt()
+              ? ocrRecovery.current : quality.ready ? "Looking for a barcode or readable label. Present a different view or product." : quality.message;
+            setCameraGuidance(message);
+            const instruction = !guidanceSpeaking && announcements.next(
+              message,
+              performance.now(),
+            );
+            if (instruction) {
+              guidanceSpeaking = true;
+              void announce(instruction, 0, true).finally(() => { guidanceSpeaking = false; });
+            }
+          }
+        } catch {
+          analysisFailed = true;
+          guidance.reset();
+          if (scanning) {
+            setCameraGuidance(GUIDANCE.unavailable);
+            void announce(GUIDANCE.unavailable, 0, true);
+          }
+        }
+      }, 700);
+    } catch (error) {
+      if (epoch === generation.current) {
+        releaseCamera();
+        phaseTo("error");
+        const instruction = error instanceof DOMException && ["NotAllowedError", "PermissionDeniedError"].includes(error.name)
+          ? "Camera permission was not granted. Allow camera access and choose Start camera to try again."
+          : `${error instanceof Error ? error.message : "Camera unavailable."} Choose Start camera to try again, or enter a barcode or label below.`;
+        setCameraGuidance(instruction);
+        void announce(instruction, 3, true);
+      }
+    }
+  }
+  async function ocr(automatic = false) {
+    if (phaseRef.current !== "scanning") return;
+    const v = video.current;
+    if (!v?.videoWidth || !reader.current || !stream.current || ocrBusy.current)
+      return;
+    const epoch = generation.current,
+      canvas = document.createElement("canvas");
+    const scale = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight));
+    canvas.width = Math.round(v.videoWidth * scale);
+    canvas.height = Math.round(v.videoHeight * scale);
+    canvas.getContext("2d")!.drawImage(v, 0, 0, canvas.width, canvas.height);
+    // Compare video samples through the same scaling path. Downsampling the
+    // saved canvas can differ from video sampling even when nothing moved.
+    const before = document.createElement("canvas");
+    before.width = before.height = 16;
+    before.getContext("2d")!.drawImage(v, 0, 0, 16, 16);
+    const presentationId = `${sessionId.current}:${gate.current.epoch}`;
+    let snapshotBarcode: string | undefined;
+    try {
+      snapshotBarcode = snapshotDecoder.current
+        ?.decodeFromCanvas(canvas)
+        .getText();
+    } catch {
+      /* This frame need not contain a readable barcode. */
+    }
+    setDiagnostics(d => ({ ...d, barcode: snapshotBarcode ?? null,
+      barcodeKnown: "not checked",
+      productSource: "not checked",
+      verification: "not checked" }));
+    setResult(null);
+    ocrBusy.current = true;
+    // Live barcode detection can beat the first 700 ms analysis tick. Always
+    // mark the captured view so that early unknown codes cannot start a loop.
+    const capturedView = document.createElement("canvas");
+    capturedView.width = 96; capturedView.height = 72;
+    const viewContext = capturedView.getContext("2d")!;
+    viewContext.drawImage(v, 0, 0, 96, 72);
+    ocrViews.current.mark(analyzeFrame(viewContext.getImageData(0, 0, 96, 72).data, 96, 72).luminance);
+    ocrRecovery.current = "";
+    phaseTo("processing");
+    if (automatic) setCameraGuidance(GUIDANCE.ready);
+    let snapshotProductLookup: Evidence["productLookup"] | undefined;
+    try {
+      if (snapshotBarcode) {
+        const resolved = await resolveProductByBarcode(snapshotBarcode);
+        if (epoch !== generation.current || !mounted.current) return;
+        if (resolved.status === "found") {
+          setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "yes", productSource: resolved.source }));
+          setCameraGuidance("Barcode detected. Checking this product.");
+          if (!gate.current.accept(`barcode:${snapshotBarcode}`)) { phaseTo("awaiting-next-item"); return; }
+          await announce("Barcode detected. Checking this product.", 1, true);
+          if (epoch !== generation.current || !mounted.current) return;
+          check({
+            barcode: snapshotBarcode,
+            product: resolved.product,
+            productSource: resolved.source,
+            productLookup: "resolved",
+            source: "barcode",
+            captureId: newId(),
+            sessionId: sessionId.current,
+            presentationId,
+          });
+          return;
+        }
+        snapshotProductLookup = resolved.status === "not-found" ? "not-found" : "unresolved";
+        setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "no", productSource: "not checked" }));
+        const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
+        setCameraGuidance(instruction);
+        await announce(instruction, 1, true);
+        if (epoch !== generation.current || !mounted.current) return;
+      }
+      setCameraGuidance("Reading label.");
+      if (automatic) {
+        await announce(GUIDANCE.ready, 1, true);
+        if (epoch !== generation.current || !mounted.current) return;
+      } else void announce("Reading a stable label. Stop remains available.", 0, true);
+      const observed = await reader.current.read(canvas, () => {
+        if (epoch === generation.current && mounted.current)
+          setDiagnostics(d => ({ ...d, ocrAttempts: d.ocrAttempts + 1 }));
+      });
+      if (epoch !== generation.current || !mounted.current) return;
+      setOcrTime(observed.elapsedMs);
+      setDiagnostics(d => ({ ...d, ocrConfidence: observed.confidence, ocrText: observed.text }));
+      if (observed.confidence < 35 || !/[\p{L}\p{N}]{3}/u.test(observed.text)) {
+        phaseTo("scanning");
+        const instruction = !snapshotBarcode && !/[\p{L}\p{N}]{3}/u.test(observed.text) ? GUIDANCE.noLabel : GUIDANCE.unreadable;
+        ocrRecovery.current = instruction;
+        setDiagnostics(d => ({ ...d, verification: "unable" }));
+        setResult({ status: "INCOMPLETE", reason: "LOW_CONFIDENCE", message: instruction });
+        setCameraGuidance(instruction);
+        void announce(instruction, 1, true);
+        return;
+      }
+      const after = document.createElement("canvas");
+      after.width = after.height = 16;
+      after.getContext("2d")!.drawImage(v, 0, 0, 16, 16);
+      const a = before.getContext("2d")!.getImageData(0, 0, 16, 16).data,
+        b = after.getContext("2d")!.getImageData(0, 0, 16, 16).data;
+      if (a.reduce((n, x, i) => n + Math.abs(x - b[i]), 0) / a.length > 16) {
+        phaseTo("scanning");
+        setDiagnostics(d => ({ ...d, verification: "unable" }));
+        setResult({ status: "INCOMPLETE", reason: "MOVED_DURING_READ", message: "Package moved while reading. Hold one label steady and retry." });
+        setCameraGuidance("Package moved while reading. Hold one label steady and retry.");
+        void announce(
+          "Package moved while reading. Hold one label steady and retry.",
+          1,
+          true,
+        );
+        return;
+      }
+      if (
+        !gate.current.accept(
+          `ocr:${observed.text.toLowerCase().replace(/\s+/g, " ").trim()}`,
+        )
+      ) {
+        phaseTo("awaiting-next-item");
+        return;
+      }
+      check({
+        ...observed,
+        barcode: snapshotBarcode,
+        productLookup: snapshotProductLookup,
+        presentationId,
+        captureId: newId(),
+        sessionId: sessionId.current,
+        source: "ocr",
+      });
+    } catch {
+      if (epoch === generation.current) {
+        phaseTo("scanning");
+        ocrRecovery.current = GUIDANCE.unreadable;
+        setDiagnostics(d => ({ ...d, verification: "unable" }));
+        setResult({ status: "INCOMPLETE", reason: "OCR_ERROR", message: GUIDANCE.unreadable });
+        setCameraGuidance(GUIDANCE.unreadable);
+        void announce(GUIDANCE.unreadable, 1, true);
+      }
+    } finally {
+      canvas.width = canvas.height = 0;
+      if (epoch === generation.current) ocrBusy.current = false;
+    }
+  }
+  function check(
+    raw: Evidence,
+    selected?: { orderId: string; itemId: string },
+  ) {
+    if (
+      pendingRef.current ||
+      ["paused", "requesting-permission", "announcing-result"].includes(
+        phaseRef.current,
+      )
+    )
+      return;
+    const evidence = {
+      ...raw,
+      captureId: raw.captureId ?? newId(),
+      sessionId: raw.sessionId ?? (sessionId.current ||= newId()),
+    };
+    const old = retryId.current
+      ? dataRef.current.attempts.find(
+          (a) => a.id === retryId.current && !a.undone,
+        )
+      : undefined;
+    let comparable = dataRef.current.orders.map((o) => ({
+      ...o,
+      items: o.items.map((i) =>
+        old?.status === "MATCH" && old.orderId === o.id && old.itemId === i.id
+          ? { ...i, verified: Math.max(0, i.verified - 1) }
+          : i,
+      ),
+    }));
+    if (selected)
+      comparable = comparable
+        .filter((o) => o.id === selected.orderId)
+        .map((o) => ({
+          ...o,
+          items: o.items.filter((i) => i.id === selected.itemId),
+        }));
+    const verdict = verify(comparable, evidence);
+    setDiagnostics(d => ({ ...d,
+      barcode: evidence.barcode ?? null,
+      barcodeKnown: evidence.barcode
+        ? evidence.productLookup === "resolved"
+          ? "yes"
+          : evidence.productLookup === "not-found"
+            ? "no"
+            : d.barcodeKnown
+        : "not checked",
+      verification: verdict.status === "MATCH" ? "match" : verdict.status === "MISMATCH" ? "mismatch" : "unable",
+    }));
+    // A user-requested retry identifies the unit slot, not the observed product fields.
+    if (old?.itemId && !verdict.itemId && !verdict.candidates?.length) {
+      verdict.orderId = old.orderId;
+      verdict.itemId = old.itemId;
+    }
+    setResult(verdict);
+    setCameraGuidance(scanFeedback(verdict, dataRef.current).title);
+    // Revise catalog-only evidence only from barcode+OCR read from one snapshot
+    // in the same observed presentation, never from unrelated captures.
+    if (
+      verdict.status === "CONFLICT" &&
+      evidence.source === "ocr" &&
+      evidence.barcode &&
+      evidence.presentationId
+    ) {
+      const previous = [...dataRef.current.attempts]
+        .reverse()
+        .find(
+          (a) =>
+            !a.undone &&
+            a.presentationId === evidence.presentationId &&
+            a.observation?.barcode === evidence.barcode &&
+            a.status === "MATCH",
+        );
+      if (previous) {
+        verdict.orderId = previous.orderId;
+        verdict.itemId = previous.itemId;
+        commit({ evidence, verdict, another: false, retry: previous.id });
+        return;
+      }
+    }
+    const identityKey = verdict.itemId
+      ? `${verdict.orderId}:${verdict.itemId}`
+      : verdict.identity;
+    if (
+      evidence.source !== "manual" &&
+      identityKey &&
+      !gate.current.accept(`identity:${identityKey}`)
+    ) {
+      phaseTo("awaiting-next-item");
+      return;
+    }
+    if (verdict.candidates?.length) {
+      pendingTo({ evidence, verdict, another: false, retry: retryId.current });
+      phaseTo("needs-clarification");
+      void announce("Which order item are you checking? Choose the expected product below. Nothing was counted.", 3);
+      return;
+    }
+    const seen = dataRef.current.attempts.some(
+      (a) =>
+        !a.undone &&
+        a.id !== old?.id &&
+        ((verdict.itemId &&
+          a.itemId === verdict.itemId &&
+          a.orderId === verdict.orderId) ||
+          (verdict.identity && a.identity === verdict.identity)),
+    );
+    if (seen && !old) {
+      pendingTo({ evidence, verdict, another: true, retry: retryId.current });
+      phaseTo("needs-clarification");
+      const epoch = generation.current;
+      void announce(
+        "Is this another physical unit? Say Yes another unit, or No retry this unit.",
+        3, true,
+      ).then(() => {
+        if (mounted.current && epoch === generation.current && phaseRef.current === "needs-clarification") voice.current?.startListening(false);
+      });
+      return;
+    }
+    commit({ evidence, verdict, another: false, retry: retryId.current });
+  }
+  function commit(p: Pending) {
+    const attempt: Attempt = {
+      id: newId(),
+      captureId: p.evidence.captureId!,
+      presentationId: p.evidence.presentationId,
+      sessionId: p.evidence.sessionId!,
+      identity: p.verdict.identity ?? "unknown",
+      orderId: p.verdict.orderId,
+      itemId: p.verdict.itemId,
+      status: p.verdict.status,
+      reason: p.verdict.reason ?? "UNKNOWN",
+      message: p.verdict.message,
+      confirmedAnotherUnit: p.another,
+      undone: false,
+      observation: {
+        text: p.evidence.text?.slice(0, 20000),
+        barcode: p.evidence.barcode,
+        source: p.evidence.source,
+        confidence: p.evidence.confidence,
+      },
+    };
+    const next = recordAttempt(dataRef.current, attempt, p.retry);
+    pendingTo(null);
+    retryId.current = undefined;
+    setResult(p.verdict);
+    if (next === dataRef.current) {
+      phaseTo("needs-clarification");
+      void announce(
+        "This attempt could not be allocated without repeating or exceeding a unit. Retry the previous unit or correct the reference; nothing counted.",
+        3,
+      );
+      return;
+    }
+    update(next);
+    const feedback = scanFeedback(p.verdict, next);
+    setCameraGuidance(p.verdict.status === "MATCH"
+      ? "Move this product away. Say Next or tap Scan next product when ready."
+      : feedback.lines.join(" "));
+    phaseTo("announcing-result");
+    const epoch = generation.current;
+    void announce(feedback.spoken, 3, true).then(() => {
+      if (
+        mounted.current &&
+        epoch === generation.current &&
+        phaseRef.current === "announcing-result"
+      ) {
+        phaseTo("awaiting-next-item");
+        voice.current?.startListening(false);
+      }
+    });
+  }
+  function nextItem() {
+    voice.current?.startListening(false);
+    pendingTo(null);
+    retryId.current = undefined;
+    gate.current.next();
+    ocrViews.current = new AutomaticOcrViews();
+    ocrRecovery.current = "";
+    phaseTo(stream.current ? "scanning" : "awaiting-next-item");
+    setCameraGuidance("Ready. Present the next product.");
+    void announce(
+      "Ready. Present the next product.", 1, true,
+    );
+  }
+  function retry() {
+    voice.current?.startListening(false);
+    const p = pendingRef.current;
+    const last = [...dataRef.current.attempts]
+      .reverse()
+      .find(
+        (a) =>
+          !a.undone &&
+          (!p ||
+            (p.verdict.itemId
+              ? a.itemId === p.verdict.itemId && a.orderId === p.verdict.orderId
+              : a.identity === p.verdict.identity)),
+      );
+    retryId.current = p
+      ? (p.retry ?? (p.another ? last?.id : undefined))
+      : last?.id;
+    pendingTo(null);
+    gate.current.next();
+    phaseTo(stream.current ? "scanning" : "awaiting-next-item");
+    void announce(
+      "Retrying the current unit. New evidence replaces its attempt without adding another checked unit.",
+    );
+  }
+  function finishChecking() {
+    voice.current?.startListening(false);
+    const report = deliveryReport(dataRef.current);
+    releaseCamera();
+    pendingTo(null);
+    retryId.current = undefined;
+    phaseTo("finished");
+    const missing = report.lines.filter((line) => line.status === "missing");
+    const unknown = report.lines.filter((line) => line.status === "unknown");
+    const details = [
+      ...missing.map((line) =>
+        `${line.product}: ${line.ordered} ordered, ${line.scanned} received, ${line.missing} missing.`,
+      ),
+      ...unknown.map((line) =>
+        `${line.product}: ordered quantity is unknown, scanned ${line.scanned}.`,
+      ),
+    ].join(" ");
+    const summary = missing.length || unknown.length
+      ? `Delivery checking complete. ${details} ${report.missingUnits} ordered ${report.missingUnits === 1 ? "item is" : "items are"} missing.${unknown.length ? ` ${unknown.length} products have unknown quantities.` : ""}`
+      : "Delivery checking complete. All ordered products and quantities were received.";
+    void announce(summary, 3, true);
+  }
+
+  function command(c: Command) {
+    if (!commandAllowed(c, phaseRef.current)) {
+      void announce(
+        `The ${c} command is unavailable in this state. Stop is always available.`,
+      );
+      return;
+    }
+    switch (c) {
+      case "yes another unit":
+        if (pendingRef.current?.another) commit(pendingRef.current);
+        break;
+      case "no retry this unit":
+        if (pendingRef.current?.another) retry();
+        break;
+      case "start":
+        return start();
+      case "stop":
+        stop();
+        break;
+      case "stop speaking":
+        voice.current?.cancelSpeech();
+        break;
+      case "repeat":
+      case "read the result again":
+        void announce(
+          c === "read the result again"
+            ? (result ? scanFeedback(result, dataRef.current).spoken : "No result yet.")
+            : messageRef.current,
+          3, true,
+        ).then(() => {
+          if (mounted.current && phaseRef.current === "awaiting-next-item") voice.current?.startListening(false);
+        });
+        break;
+      case "finish":
+        finishChecking();
+        break;
+      case "next":
+        nextItem();
+        break;
+      case "retry":
+        retry();
+        break;
+      case "help":
+        navigate("help");
+        void announce(
+          "Commands: Start, Stop, Repeat, Next, Finish, Help, Retry, Read my orders, Read the result again, Go back, Stop speaking. Named controls offer equivalent actions. During speech, say Stop speaking to interrupt or Stop to end the session.",
+        );
+        break;
+      case "read my orders":
+        navigate("orders");
+        void announce(
+          dataRef.current.orders.length
+            ? dataRef.current.orders
+                .map(
+                  (o) =>
+                    `${o.label}. ${o.items.map((i) => `${i.quantity ?? "Unknown quantity of"} ${i.brand} ${i.name}, ${i.variant}, ${i.size}`).join(". ")}`,
+                )
+                .join(". ")
+            : "No orders. Paste or upload a purchase reference.",
+        );
+        break;
+      case "go back":
+        navigate("overview");
+        break;
+    }
+  }
+  return {
+    feedback: result ? scanFeedback(result, data) : null,
+    diagnostics,
+    cameraGuidance,
+    tab,
+    navigate,
+    data,
+    update,
+    prefs,
+    setPrefs,
+    ready,
+    remember,
+    setRemember,
+    storageOff,
+    storageError,
+    message,
+    noticeId,
+    phase,
+    phaseTo,
+    listening,
+    speaking,
+    camera,
+    result,
+    pending,
+    ocrTime,
+    stats: progress(data),
+    report: deliveryReport(data),
+    announce,
+    speakOrder: (text: string, explicit = false) => voice.current?.say(text, 3, explicit) ?? Promise.resolve(),
+    start,
+    stop,
+    check,
+    ocr,
+    command,
+    nextItem,
+    retry,
+    finishChecking,
+    confirmAnother: () => {
+      if (pending) commit(pending);
+    },
+    selectLine: (selected: { orderId: string; itemId: string }) => {
+      if (pending) {
+        const e = pending.evidence;
+        pendingTo(null);
+        phaseTo("awaiting-next-item");
+        check(e, selected);
+      }
+    },
+    undo: () => {
+      const last = [...dataRef.current.attempts]
+        .reverse()
+        .find((a) => !a.undone);
+      if (last) {
+        update(undoAttempt(dataRef.current, last.id));
+        pendingTo(null);
+        retryId.current = undefined;
+        phaseTo("awaiting-next-item");
+        void announce(
+          "Last checking event undone; its unit count was reversed.",
+        );
+      }
+    },
+    clear: () => {
+      stop();
+      update(initial);
+      storageOff();
+      setResult(null);
+      phaseTo("idle");
+      void announce("All orders and checking history cleared at your request.");
+    },
+    startListening: () => {
+      if (window.isSecureContext) voice.current?.startListening();
+      else void announce("Voice commands require HTTPS or localhost.");
+    },
+    stopListening: () => voice.current?.stopListening(),
+  };
+}

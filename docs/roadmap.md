@@ -29,3 +29,13 @@ Day 13 — Testing and Deployment. Urwa: assisted user feedback and fixes. Abdul
 Day 14 — Testing and Deployment. Both: regression, documentation and release review. Acceptance: known limitations acknowledged, trusted catalog integration scoped, both developers approve the release.
 
 The initial implementation covers the software foundation and demonstrable P0 workflow. Real catalog coverage, user research and physical-device acceptance remain release gates. Ownership assignments in GitHub require Abdullah's confirmed account and collaborator access.
+
+## Voice-first upgrade handoff
+
+The current user instruction continues application work on `urwa/git-workflow-policy` and updates draft PR #13; do not wait for its merge or create another branch for this upgrade. No agent merge, auto-merge, deployment or final release is authorized. Ordinary future tasks retain the documented per-task branch policy.
+
+Urwa: review the assistant-first screen, Menu/focus/keyboard flow, text/contrast preferences, permission disclosures, and real VoiceOver/iPhone / TalkBack/Android independent setup and failed-scan recovery. Manual-device tests remain NOT RUN until performed.
+
+Abdullah: review the shared engine/session/media/voice modules in PR #13, especially unknown quantities, reference provenance, comparison reason mappings, explicit allocation, retry/Undo invariants, worker cancellation and identical-unit confirmation. Supply authoritative catalog coverage and representative English receipt fixtures without changing these evidence boundaries. Write access is confirmed; review approval is still required before a human merges.
+
+Both: retain existing working imports, manual barcode/label controls and session-storage behavior; record real-device/browser versions and results, including rapid swaps, duplicate packages, permission denial, offline assets and speech overlap. Automated Chromium/mobile emulation, fake speech/OCR, contrast arithmetic and axe results are useful regression checks, not independent usability evidence. Final hackathon release requires explicit user approval.
