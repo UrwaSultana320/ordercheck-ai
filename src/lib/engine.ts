@@ -76,6 +76,15 @@ export const normalize = (s: string) =>
     .trim();
 const contains = (text: string, field: string) =>
   !!field && ` ${normalize(text)} `.includes(` ${normalize(field)} `);
+const removePhrase = (text: string, phrase: string) => {
+  const normalizedText = normalize(text);
+  const normalizedPhrase = normalize(phrase);
+  if (!normalizedPhrase) return normalizedText;
+  return ` ${normalizedText} `
+    .replace(` ${normalizedPhrase} `, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
 export function sizes(text: string) {
   return [...text.matchAll(/\b(\d+(?:\.\d+)?)\s*(kg|ml|g|l)\b/gi)].map((m) => ({
     raw: m[0],
@@ -192,8 +201,12 @@ export function verify(orders: Order[], evidence: Evidence): Verdict {
       contains(reference, product.name) || contains(product.name, i.name);
     const brandMatches =
       !i.brand || normalize(i.brand) === normalize(product.brand);
-    const variantMatches =
-      !i.variant || normalize(i.variant) === normalize(product.variant);
+    const implicitDescriptor = [product.brand, product.name, i.brand, i.size, product.size]
+      .filter(Boolean)
+      .reduce((remaining, known) => removePhrase(remaining, known), i.name);
+    const variantMatches = i.variant
+      ? normalize(i.variant) === normalize(product.variant)
+      : contains(reference, product.variant) || !implicitDescriptor;
     const sizeMatches = !i.size || sameSize(i.size, product.size);
     return nameMatches && brandMatches && variantMatches && sizeMatches;
   };
@@ -270,6 +283,13 @@ export function verify(orders: Order[], evidence: Evidence): Verdict {
       "A packing slip is not independent purchase evidence. Add the original purchase reference.",
       relatedLine,
     );
+  if (product)
+    return result(
+      "MISMATCH",
+      "DIFFERENT_PRODUCT",
+      "The catalog identity differs from the requested product, variant or size. No verified unit added.",
+      relatedLine,
+    );
   if (
     relatedLine &&
     [relatedLine.i.brand, relatedLine.i.variant, relatedLine.i.size].some(
@@ -280,13 +300,6 @@ export function verify(orders: Order[], evidence: Evidence): Verdict {
       "INCOMPLETE",
       "MISSING_REFERENCE_FIELDS",
       "The purchase reference is missing identifying fields. Correct those fields before claiming a match or mismatch.",
-      relatedLine,
-    );
-  if (product)
-    return result(
-      "MISMATCH",
-      "DIFFERENT_PRODUCT",
-      "The catalog identity differs from the requested product, variant or size. No verified unit added.",
       relatedLine,
     );
   if (relatedLine && hasField(text, relatedLine.i.brand)) {
