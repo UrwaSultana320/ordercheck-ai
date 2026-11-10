@@ -1,6 +1,7 @@
 import { z } from "zod";
 import catalog from "../data/catalog.v1.json";
 import { newId } from "./id";
+import type { CatalogProduct } from "./product-catalog";
 const provenanceSchema = z.object({
   text: z.string().max(2000),
   line: z.number().int().positive(),
@@ -47,6 +48,9 @@ export type Evidence = {
   captureId?: string;
   sessionId?: string;
   source?: "barcode" | "ocr" | "manual";
+  product?: CatalogProduct;
+  productSource?: "supabase" | "local-fallback";
+  productLookup?: "resolved" | "not-found" | "unresolved";
 };
 export type Verdict = {
   status: "MATCH" | "MISMATCH" | "CONFLICT" | "INCOMPLETE";
@@ -93,9 +97,14 @@ function hasField(text: string, field: string) {
 }
 export function verify(orders: Order[], evidence: Evidence): Verdict {
   const reliable = !!evidence.text?.trim() && (evidence.confidence ?? 0) >= 85;
-  const product = evidence.barcode
-    ? catalog.products.find((p) => p.barcodes.includes(evidence.barcode!))
-    : undefined;
+  const product =
+    evidence.productLookup === "resolved"
+      ? evidence.product
+      : evidence.productLookup === "not-found"
+        ? undefined
+        : evidence.barcode
+          ? catalog.products.find((p) => p.barcodes.includes(evidence.barcode!))
+          : undefined;
   const text = reliable ? evidence.text! : "";
   const all = orders.flatMap((o) => o.items.map((i) => ({ o, i })));
   const identity = product?.id ?? (text ? normalize(text) : evidence.barcode);
@@ -114,7 +123,7 @@ export function verify(orders: Order[], evidence: Evidence): Verdict {
       ? ["name", "brand", "variant", "size"].map((field) => ({
           field,
           observed: product[field as "name" | "brand" | "variant" | "size"],
-          source: `demonstration catalog v1 / ${evidence.captureId ?? "manual capture"}`,
+          source: `${evidence.productSource === "supabase" ? "product database" : "local fallback catalog"} / ${evidence.captureId ?? "manual capture"}`,
         }))
       : text
         ? [
