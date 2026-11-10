@@ -1,3 +1,4 @@
+import { expand } from "./ui";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 test.beforeEach(async ({ page }) => {
@@ -8,21 +9,19 @@ test.beforeEach(async ({ page }) => {
   });
 });
 async function openMenu(page: Page) {
-  const menu = page.getByRole("button", { name: "Menu", exact: true });
-  if (
-    (await menu.isVisible()) &&
-    (await menu.getAttribute("aria-expanded")) === "false"
-  )
-    await menu.click();
+  await expand(page, "Voice & session controls");
+  await expand(page, "Privacy & stored orders");
 }
 async function navigate(page: Page, name: string) {
   await openMenu(page);
-  await page
-    .getByRole("navigation")
-    .getByRole("button", { name, exact: true })
-    .click();
-  if (name === "Scan a delivery" && await page.getByText("More options", { exact: true }).isVisible())
-    await page.getByText("More options", { exact: true }).click();
+  if (name === "Scan a delivery" && await page.locator("#scanner-heading").count()) {
+    await page.getByRole("heading", { name: "Check your delivery", exact: true }).focus();
+    await expand(page, "More options");
+  } else if (name === "Accessibility settings" || name === "Help & guidance") {
+    await expand(page, name);
+  } else {
+    await page.locator(name === "My orders" ? "#order-heading" : "#hero-heading").focus();
+  }
 }
 async function addOrder(
   page: Page,
@@ -55,9 +54,10 @@ test("import, duplicate confirmation, retry, Undo and optional session storage",
   page,
 }, testInfo) => {
   await page.goto("/");
+  await openMenu(page);
   await expect(
     page.getByRole("button", {
-      name: "Start checking my delivery",
+      name: "Tell OrderCheck what I ordered",
       exact: true,
     }),
   ).toBeEnabled();
@@ -66,7 +66,7 @@ test("import, duplicate confirmation, retry, Undo and optional session storage",
     fullPage: false,
   });
   await addOrder(page);
-  await expect(page.getByText("0 / 2 matching", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order").getByText("Quantity: 2.", { exact: true })).toBeVisible();
   await scanManually(page);
   await expect(
     page.getByRole("heading", { name: "Product scanned successfully", exact: true }),
@@ -106,11 +106,12 @@ test("import, duplicate confirmation, retry, Undo and optional session storage",
     .check();
   await page.reload();
   await navigate(page, "My orders");
-  await expect(page.getByText("1 / 2 matching", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).orders[0].items[0].verified)).toBe(1);
+  await expect(page.locator(".saved-order").getByText("Quantity: 2.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Clear orders", exact: true }).click();
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "No orders yet", exact: true }),
+    page.getByText("No orders yet. Tell us what you ordered to begin.", { exact: true }),
   ).toBeVisible();
 });
 test("no general narration, no-order start, spoken camera denial and unsupported voice preserve fallback controls", async ({
@@ -140,8 +141,9 @@ test("no general narration, no-order start, spoken camera denial and unsupported
     });
   });
   await page.goto("/");
+  await openMenu(page);
   await page
-    .getByRole("button", { name: "Start checking my delivery", exact: true })
+    .getByRole("button", { name: "Start", exact: true })
     .click();
   await expect(page.getByRole("status")).toContainText("No purchase reference");
   await addOrder(page);
@@ -178,6 +180,7 @@ test("packing-slip provenance and unknown quantity never become a verified deliv
   page,
 }) => {
   await page.goto("/");
+  await openMenu(page);
   await navigate(page, "My orders");
   await page.getByText("Other ways to add an order", { exact: true }).click();
   await page.getByRole("button", { name: "Import an order", exact: true }).click();
@@ -205,6 +208,7 @@ test("preferences persist without storing receipts; views reflow and meet automa
   page,
 }) => {
   await page.goto("/");
+  await openMenu(page);
   await navigate(page, "Accessibility settings");
   await expect(page.getByLabel("Screen-reader mode (default)")).toBeChecked();
   await page
@@ -255,9 +259,7 @@ test("keyboard skip link, navigation focus and nonvoice completion", async ({
   await expect(page.locator("#main")).toBeFocused();
   await addOrder(page, "Oat drink | Everyday | Original | 1 L | 1");
   await openMenu(page);
-  const scan = page
-    .getByRole("navigation")
-    .getByRole("button", { name: "Scan a delivery", exact: true });
+  const scan = page.getByRole("button", { name: "Start checking", exact: true });
   await scan.focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -266,6 +268,7 @@ test("keyboard skip link, navigation focus and nonvoice completion", async ({
   await page.getByText("More options", { exact: true }).click();
   await page.getByLabel("Enter a barcode").focus();
   await page.keyboard.type("DEMO-OAT-ORIGINAL-1L");
+  await expect(page.getByRole("button", { name: "Check barcode", exact: true })).toBeEnabled();
   await page.keyboard.press("Tab");
   await expect(
     page.getByRole("button", { name: "Check barcode", exact: true }),
@@ -279,6 +282,7 @@ test("ambiguous orders require explicit selection and unrelated scans stay unass
   page,
 }) => {
   await page.goto("/");
+  await openMenu(page);
   await addOrder(page, "Oat drink | Everyday | Original | 1 L | 1", "First");
   await addOrder(page, "Oat drink | Everyday | Original | 1 L | 1", "Second");
   await scanManually(page);
@@ -297,13 +301,15 @@ test("ambiguous orders require explicit selection and unrelated scans stay unass
   await expect(page.getByRole("heading", { name: "Unable to verify this product", exact: true })).toBeVisible();
   await expect(page.getByText("Nothing was counted.", { exact: false }).first()).toBeVisible();
   await page.getByRole("button", { name: "Finish checking delivery", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("1 ordered units missing");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("1 item is missing from your delivery.");
+  await expect(page.getByRole("heading", { name: "Delivery summary", exact: true })).toBeFocused();
 });
 
 test("default colors pass axe; 200 percent text and narrow layout preserve reflow", async ({
   page,
 }) => {
   await page.goto("/");
+  await openMenu(page);
   for (const name of [
     "Overview",
     "My orders",
@@ -383,6 +389,7 @@ test("mocked voice commands drive navigation and spoken interruption preserves l
     });
   });
   await page.goto("/");
+  await openMenu(page);
   await page
     .getByLabel("I understand voice commands", { exact: false })
     .check();
@@ -447,6 +454,7 @@ test("Stop cancels a pending mocked camera permission and releases a late stream
     });
   });
   await page.goto("/");
+  await openMenu(page);
   await addOrder(page);
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await page.getByText("More options", { exact: true }).click();
@@ -477,4 +485,56 @@ test("Stop cancels a pending mocked camera permission and releases a late stream
   await expect(
     page.getByRole("region", { name: "Session controls" }),
   ).toContainText("Camera: off");
+});
+
+test("one-page entry stays uncluttered and accessible at phone widths", async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "Know what arrived.Without depending on sight.",
+  );
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "Tell OrderCheck what I ordered",
+      exact: true,
+    }),
+  ).toBeVisible();
+  for (const name of [
+    "Accessibility settings",
+    "Help & guidance",
+    "Voice & session controls",
+    "Privacy & stored orders",
+    "Technical details",
+  ]) {
+    await expect(
+      page
+        .locator("summary")
+        .filter({ hasText: new RegExp(`^${name}$`) })
+        .locator(".."),
+    ).not.toHaveAttribute("open");
+  }
+  for (const width of [320, 390, 1024]) {
+    await page.setViewportSize({ width, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("one-page-entry.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
 });

@@ -1,7 +1,9 @@
+import { expand } from "./ui";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 async function openVoice(page: Page) {
   await page.goto("/");
+  await expand(page, "Privacy & stored orders");
   await page.getByRole("button", { name: "Tell OrderCheck what I ordered", exact: true }).first().click();
   await expect(page.getByRole("heading", { name: "Tell OrderCheck what I ordered", exact: true })).toBeFocused();
 }
@@ -34,14 +36,14 @@ test("explicit confirmation of heard name saves an order and offers scanning wit
   await expect(save).toBeEnabled();
   await save.click();
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toHaveCount(0);
-  await expect(page.getByText("1 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(1);
   const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!));
   expect(saved.orders[0].source).toBe("voice");
   expect(saved.orders[0].items[0]).toMatchObject({ name: "Head and shoulders anti-denture", quantity: 1 });
-  const scan = page.getByRole("button", { name: "Scan this delivery", exact: true });
+  const scan = page.getByRole("button", { name: "Start checking", exact: true });
   await expect(scan).toBeFocused();
   await expect(scan).toBeInViewport();
-  await scan.click();
+  await page.getByRole("heading", { name: "Check your delivery", exact: true }).focus();
   await page.getByText("More options", { exact: true }).click();
   await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeVisible();
   await expect(page.getByText("Your camera is off", { exact: true })).toBeVisible();
@@ -71,17 +73,16 @@ test("missing quantity explains disabled save and requires a valid correction be
   await expect(save).toBeEnabled();
 });
 
-test("empty Scan offers Create an order and reaches normal Scan after saving without a redirect loop", async ({ page }) => {
+test("empty order starts the composer and exposes the scanner after confirmation", async ({ page }) => {
   await page.goto("/");
-  const menu = page.getByRole("button", { name: "Menu", exact: true });
-  if (await menu.isVisible()) await menu.click();
-  await page.getByRole("navigation").getByRole("button", { name: "Scan a delivery", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Save an order before scanning a delivery.", exact: true })).toBeVisible();
+  await expand(page, "Privacy & stored orders");
+  await expand(page, "Voice & session controls");
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Tell OrderCheck what I ordered", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start camera", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Create an order", exact: true }).click();
   await review(page, "one soap");
   await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
-  await page.getByRole("button", { name: "Scan this delivery", exact: true }).click();
+  await page.getByRole("heading", { name: "Check your delivery", exact: true }).focus();
   if (await page.getByText("More options", { exact: true }).locator("..").getAttribute("open") === null) await page.getByText("More options", { exact: true }).click();
   await expect(page.getByRole("button", { name: "Start camera", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Create an order", exact: true })).toHaveCount(0);
@@ -91,15 +92,15 @@ test("typed transcript requires confirmation, omits missing details, saves logic
   await expect(page.getByRole("button", { name: "Review order", exact: true })).toBeDisabled();
   await review(page, "I ordered from Market. two blue shirts and one soap 200 g");
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused();
-  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(0);
   expect(await page.evaluate(() => sessionStorage.getItem("ordercheck.v2"))).toBeNull();
   await page.screenshot({ path: testInfo.outputPath("voice-order-review.png"), fullPage: true });
   expect((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze()).violations).toEqual([]);
   await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
-  const order = page.getByRole("heading", { name: "Market", exact: true }).locator("../..");
+  const order = page.locator(".saved-order").filter({ has: page.getByRole("heading", { name: "Market", exact: true }) });
   await expect(order.getByRole("heading", { name: "shirts", level: 3 })).toBeVisible();
   await expect(order.getByText(/color: blue/)).toBeVisible();
-  await expect(order.getByText(/Size: 200 g/)).toBeVisible();
+  await expect(order.getByText(/200 g/)).toBeVisible();
   await expect(order).not.toContainText("N/A");
   await expect(order).not.toContainText("Color: Unknown");
   await page.getByLabel("Keep orders in this browser tab for this session").check();
@@ -108,9 +109,7 @@ test("typed transcript requires confirmation, omits missing details, saves logic
   expect(saved.orders[0].source).toBe("manual");
   expect(saved.orders[0].items[0]).not.toHaveProperty("source");
   await page.reload();
-  const menu = page.getByRole("button", { name: "Menu", exact: true });
-  if (await menu.isVisible()) await menu.click();
-  await page.getByRole("navigation").getByRole("button", { name: "My orders", exact: true }).click();
+  await page.locator("#order-heading").focus();
   await expect(page.getByRole("heading", { name: "Market", exact: true })).toBeVisible();
 });
 test("targeted size correction preserves other products; start again and cancel never save", async ({ page }) => {
@@ -127,7 +126,7 @@ test("targeted size correction preserves other products; start again and cancel 
   await page.getByRole("button", { name: "Start again", exact: true }).click();
   await expect(page.getByLabel("Order transcript", { exact: true })).toHaveValue("");
   await page.getByRole("button", { name: "Cancel order", exact: true }).click();
-  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(0);
 });
 test("unsupported dictation offers typed fallback", async ({ page }) => {
   await page.addInitScript(() => {
@@ -220,7 +219,7 @@ test("failed review focuses an inline alert and an edited speech-style transcrip
   await expect(page.getByText("Platform: Daraz", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Product 2", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Confirm and save voice order", exact: true }).click();
-  await expect(page.getByText("1 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(1);
 });
 
 for (const ending of ["Finish recording", "recorder end", "maximum duration"] as const) {
@@ -318,7 +317,7 @@ test("mocked permission denial, cancel, restart, and Escape leave microphone off
   await page.getByRole("button", { name: "Start order recording", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
-  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(0);
 });
 
 test("successful dictation can be inspected and edited; explicit save persists no audio or transcript", async ({ page }) => {
@@ -330,11 +329,12 @@ test("successful dictation can be inspected and edited; explicit save persists n
   await page.getByRole("button", { name: "Start order recording", exact: true }).click();
   await page.getByRole("button", { name: "Finish recording", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeFocused();
+  await expand(page, "Technical details");
   const raw = page.getByRole("region", { name: "Raw transcription", exact: true });
   await expect(raw).toBeVisible();
   expect(await raw.locator("p").textContent()).toBe(transcript);
   await expect(raw.locator("p")).toHaveCSS("white-space", "pre-wrap");
-  expect(await raw.evaluate(section => section.nextElementSibling?.textContent)).toBe("Platform: Shop");
+  await expect(page.locator(".voice-order-platform")).toHaveText("Platform: Shop");
   await expect(page.getByText("Order microphone: listening.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Cancel recording", exact: true }).click();
   await page.getByRole("button", { name: "Read back order", exact: true }).click();
@@ -394,10 +394,11 @@ test("transcribing state keeps microphone off and cancellation ignores a late tr
 test("legacy saved orders load without new optional fields", async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem("ordercheck.v1", JSON.stringify([{ id: "legacy", label: "Legacy order", source: "manual", items: [{ id: "legacy-item", name: "Legacy soap", brand: "", variant: "", size: "", quantity: 2, verified: 0 }] }])));
   await page.goto("/");
-  await page.getByRole("button", { name: "View all orders", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Legacy order", level: 2 })).toBeVisible();
+  await expand(page, "Privacy & stored orders");
+  await page.locator("#order-heading").focus();
+  await expect(page.getByRole("heading", { name: "Legacy order", level: 3 })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Legacy soap", level: 3 })).toBeVisible();
-  await expect(page.getByText("0 / 2 matching", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order").getByText("Quantity: 2.", { exact: true })).toBeVisible();
   await expect(page.getByText(/Size: N\/A|Color: Unknown|Variant: -/)).toHaveCount(0);
 });
 test("voice review reflows with large text and high contrast and passes axe", async ({ page }) => {
@@ -449,6 +450,7 @@ for (const denied of [false, true]) {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await page.getByText("More options", { exact: true }).click();
+    await expand(page, "Voice & session controls");
     await expect(page.getByRole("region", { name: "Session controls" })).toContainText("requesting permission");
     await page.evaluate(() => {
       Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -482,7 +484,7 @@ test("spoken Confirm speaks the missing product quantity and leaves correction a
   await review(page, "two soaps; Head and shoulders anti-denture");
   await page.getByRole("button", { name: "Speak response", exact: true }).click(); await emit(page, "confirm");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.includes("I still need the quantity for product 2 before I can save this order."))).toBe(true);
-  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(0);
   await page.getByRole("button", { name: "Change", exact: true }).click();
   await expect(page.getByLabel("Correct value", { exact: true })).toBeEditable();
 });
@@ -510,7 +512,7 @@ test("voice readback finishes before one automatic response window; timeout pres
   await expect(page.getByText("No response heard. Use Speak response or the buttons to continue.", { exact: true })).toBeVisible();
   await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Product 1", exact: true })).toBeVisible();
-  await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+  await expect(page.locator(".saved-order")).toHaveCount(0);
   await page.clock.fastForward(20000);
   expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
   await page.getByRole("button", { name: "Speak response", exact: true }).click();
@@ -524,6 +526,7 @@ test("typed review and explicit readback never auto-listen; Speak response remai
   await expect.poll(() => page.evaluate(() => (window as unknown as { __spokenEnded: string[] }).__spokenEnded.some(s => s.includes("I heard:")))).toBe(true);
   expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(0);
   await expect(page.getByText("Order microphone: off.", { exact: true })).toBeVisible();
+  await expand(page, "Technical details");
   const diagnostic = page.getByRole("region", { name: "Voice response diagnostic", exact: true });
   await expect(diagnostic).toContainText("Last voice response heard: no response yet");
   await expect(diagnostic).toContainText("Normalized command: not processed");
@@ -539,6 +542,7 @@ for (const [raw, normalized] of [["confirm order", "confirm order"], ["  Confirm
     await page.getByLabel("Allow order audio transcription", { exact: false }).check();
     await page.getByRole("button", { name: "Start order recording", exact: true }).click();
     await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+    await expand(page, "Technical details");
     const diagnostic = page.getByRole("region", { name: "Voice response diagnostic", exact: true });
     await expect(diagnostic).toContainText("Voice response state: listening");
     await emit(page, raw);
@@ -550,7 +554,7 @@ for (const [raw, normalized] of [["confirm order", "confirm order"], ["  Confirm
     await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeVisible();
     await expect(page.getByText("soaps", { exact: true })).toBeVisible();
     await expect(page.getByText("2", { exact: true })).toBeVisible();
-    await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+    await expect(page.locator(".saved-order")).toHaveCount(0);
     const speak = page.getByRole("button", { name: "Speak response", exact: true });
     await expect(speak).toBeEnabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -575,6 +579,7 @@ for (const outcome of ["no-speech", "not-allowed", "network", "end without speec
     await page.getByLabel("Allow order audio transcription", { exact: false }).check();
     await page.getByRole("button", { name: "Start order recording", exact: true }).click();
     await page.getByRole("button", { name: "Finish recording", exact: true }).click();
+    await expand(page, "Technical details");
     const diagnostic = page.getByRole("region", { name: "Voice response diagnostic", exact: true });
     await expect(diagnostic).toContainText("Voice response state: listening");
     if (outcome === "timeout") await page.clock.fastForward(15001);
@@ -591,7 +596,7 @@ for (const outcome of ["no-speech", "not-allowed", "network", "end without speec
     else await expect(diagnostic).not.toContainText("Voice response error:");
     await expect(page.getByRole("heading", { name: "Review your order", exact: true })).toBeVisible();
     await expect(page.getByText("soap", { exact: true })).toBeVisible();
-    await expect(page.getByText("0 saved orders", { exact: true })).toBeVisible();
+    await expect(page.locator(".saved-order")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Speak response", exact: true })).toBeEnabled();
     expect(await page.evaluate(() => (window as unknown as { __responseStarts: number }).__responseStarts)).toBe(1);
   });

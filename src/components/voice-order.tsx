@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Order } from "@/lib/engine";
 import { canConfirmField, confirmCurrentDetails, hasRequiredQuantity, confirmOrder, correctOrder, extractSpokenOrder, fieldValue, orderFields, orderReadback, type Correction, type OrderCandidate } from "@/lib/spoken-order";
 import { createOrderTranscription, createOrderResponseRecognition, onOrderInterruption, type TranscriptionProvider } from "@/lib/order-transcription";
@@ -195,6 +196,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
     {error && <p id="order-transcript-error" ref={errorMessage} role="alert" tabIndex={-1}>{error}</p>}
     {!candidate && <button className="primary" disabled={!transcript.trim() || busy} onClick={() => process()}>Review order</button>}
     {candidate && <>
+      {document.getElementById("voice-technical-details") && createPortal(<>
       <section aria-labelledby="voice-response-diagnostic-heading" style={{ minWidth: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>
         <h3 id="voice-response-diagnostic-heading">Voice response diagnostic</h3>
         <p>Last voice response heard: {responseDiagnostic.raw === null ? "no response yet" : responseDiagnostic.raw === "" ? "nothing" : `"${responseDiagnostic.raw}"`}</p>
@@ -206,6 +208,7 @@ export function VoiceOrder({ save, close, announce, stopSpeech }: Props) {
         <h3 id="raw-transcription-heading">Raw transcription</h3>
         <p>{transcript}</p>
       </section>
+      </>, document.getElementById("voice-technical-details")!)}
       {candidate.platform && <p className="voice-order-platform"><strong>Platform:</strong> {candidate.platform}</p>}
       <ol className="voice-order-products">{candidate.items.map((item, index) => <li className="voice-order-product" key={item.id}><h3>Product {index + 1}</h3><p className="voice-order-name">{item.name || "Name needs confirmation"}</p><dl className="voice-order-details">{orderFields.filter(field => field !== "name" && fieldValue(item, field)).map(field => <div key={field}><dt>{field}</dt><dd>{fieldValue(item, field)}</dd></div>)}</dl></li>)}</ol>
       {candidate.unresolved.length > 0 && <p><strong>Needs confirmation: {candidate.unresolved.map(t => `${"index" in t ? `product ${t.index + 1} ` : ""}${t.field}`).join(", ")}.</strong></p>}

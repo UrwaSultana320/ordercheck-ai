@@ -1,3 +1,4 @@
+import { expand } from "./ui";
 import { QRCodeWriter, BarcodeFormat } from "@zxing/library";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
@@ -155,9 +156,8 @@ test("synthetic dark camera guidance is accessible, quiet, and preserves manual 
   });
   await page.getByRole("button", { name: "Start camera", exact: true }).click();
   await expect(page.getByRole("button", { name: "Stop camera", exact: true })).toBeEnabled();
-  const menu = page.getByRole("button", { name: "Menu", exact: true });
-  if (await menu.isVisible() && await menu.getAttribute("aria-expanded") === "false") await menu.click();
-  await page.getByRole("navigation").getByRole("button", { name: "My orders", exact: true }).click();
+  await page.getByRole("button", { name: "Add another order", exact: true }).click();
+  await expand(page, "Voice & session controls");
   await expect(page.getByRole("region", { name: "Session controls" })).toContainText("Camera: off");
 });
 
@@ -421,7 +421,7 @@ for (const next of ["button", "voice", "finish"]) test(`successful scan pauses u
   const points = eanPoints("4897099081562");
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
   await expect(page.getByRole("heading", { name: "Product scanned successfully", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Scan next product", exact: true })).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Start listening", exact: true })).not.toBeVisible();
   expect(await page.locator("main").innerText()).not.toMatch(/DEMO_CATALOG|Capture:|OCR attempts|Live barcode attempts|Scanner phase|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{22,}/);
@@ -443,9 +443,9 @@ for (const next of ["button", "voice", "finish"]) test(`successful scan pauses u
   expect(await page.evaluate(() => (window as unknown as { __ocrReads: number }).__ocrReads)).toBe(0);
   expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ordercheck.v2")!).attempts)).toHaveLength(1);
   if (next === "finish") {
-    await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+    await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
     await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Finish"));
-    await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing 1.");
+    await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing: 1");
     await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text.includes("2 ordered, 1 received, 1 missing")))).toBe(true);
     return;
   }
@@ -455,17 +455,18 @@ for (const next of ["button", "voice", "finish"]) test(`successful scan pauses u
   await page.waitForTimeout(250);
   if (next === "button") await page.getByRole("button", { name: "Scan next product", exact: true }).click();
   else {
-    await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+    await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
     await page.evaluate(() => (window as unknown as { __nextVoice: { emit(): void } }).__nextVoice.emit());
   }
   await expect(diagnostics).toContainText("Scanner phase: scanning");
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Ready. Present the next product."))).toBe(true);
   await expect.poll(() => diagnostics.getByText(/^Live barcode attempts:/).innerText()).not.toBe(attempts);
   await page.evaluate(points => { (window as unknown as { __barcodePoints: [number, number][] }).__barcodePoints = points; }, points);
   await expect(diagnostics).toContainText("Scanner phase: needs-clarification");
+  await expand(page, "Voice & session controls");
   await expect(page.getByRole("region", { name: "Session controls" })).toContainText("App speech: silent");
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Yes another unit"));
   await expect(page.getByText("2 of 2 received.", { exact: true })).toBeVisible();
   await expect(page.getByText("This product is complete.", { exact: true })).toBeVisible();
@@ -477,9 +478,9 @@ for (const next of ["button", "voice", "finish"]) test(`successful scan pauses u
   const camera = await page.evaluate(() => ({ requests: (window as unknown as { __cameraRequests: number }).__cameraRequests, stops: (window as unknown as { __cameraStops: number }).__cameraStops, active: (document.querySelector("video")!.srcObject as MediaStream).active }));
   expect(camera).toEqual({ requests: 1, stops: 0, active: true });
   await expect(page.getByRole("region", { name: "Final delivery report" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   await page.evaluate(() => (window as unknown as { __nextVoice: { emit(text: string): void } }).__nextVoice.emit("Finish"));
-  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("All ordered quantities are complete.");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Everything you ordered was received.");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.some(s => s.text === "Delivery checking complete. All ordered products and quantities were received."))).toBe(true);
 });
 
@@ -553,7 +554,7 @@ test("persistent commands, successful-result barge-in, Repeat, Next and Finish r
   }, eanPoints("4897099081562"));
   await expect(page.getByRole("heading", { name: "Product scanned successfully", exact: true })).toBeVisible();
   await expect(page.getByText("1 of 2 received.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   await expect(page.getByText("Scanner phase: awaiting-next-item", { exact: true })).toHaveCount(1);
   // Repeat the last human-readable result and hold the mock utterance mid-speech.
   await page.evaluate(() => { (window as unknown as { __holdSpeech: boolean }).__holdSpeech = true; });
@@ -575,9 +576,9 @@ test("persistent commands, successful-result barge-in, Repeat, Next and Finish r
   });
   await sayCommand(page, "scan next product");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speeches: { text: string }[] }).__speeches.at(-1)!.text)).toBe("Ready. Present the next product.");
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   await sayCommand(page, "I'm done");
-  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing 1.");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing: 1");
   const state = await page.evaluate(() => {
     const host = window as unknown as { __cameraRequests: number; __cameraStops: number; __maxRecognitionActive: number; __speeches: { text: string }[] };
     return { requests: host.__cameraRequests, stopped: host.__cameraStops > 0 && document.querySelector("video")?.srcObject == null, max: host.__maxRecognitionActive,
@@ -599,18 +600,20 @@ test("spoken Stop during scanner speech ends camera, recognition and narration",
   await expect.poll(() => page.evaluate(() => (window as unknown as { __recognitionActive: number }).__recognitionActive)).toBe(0);
   await page.waitForTimeout(600);
   expect(await page.evaluate(() => (window as unknown as { __cameraStops: number }).__cameraStops)).toBeGreaterThan(0);
-  await expect(page.getByRole("heading", { name: "Scanner ready", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Scanner ready$/ })).toBeVisible();
 });
 
 test("Start scanning alias invokes the existing scanner and automatically keeps commands available", async ({ page }) => {
   await installCamera(page);
   await installCommands(page);
   await page.goto("/");
+  await expand(page, "Voice & session controls");
   await page.getByLabel("I understand voice commands may send audio to my browser provider").check();
+  await expand(page, "Voice & session controls");
   await page.getByRole("button", { name: "Start listening", exact: true }).click();
   await sayCommand(page, "start scanning");
-  await expect(page.getByRole("heading", { name: "Listening", exact: true })).toBeVisible();
+  await expect(page.locator(".scan-state").filter({ hasText: /^Listening$/ })).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { __cameraRequests: number }).__cameraRequests)).toBe(1);
   await sayCommand(page, "finish checking");
-  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing 1.");
+  await expect(page.getByRole("region", { name: "Final delivery report" })).toContainText("Missing: 1");
 });
