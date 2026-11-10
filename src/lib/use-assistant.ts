@@ -76,6 +76,7 @@ export function useAssistant(
   const [diagnostics, setDiagnostics] = useState({
     barcode: null as string | null,
     barcodeKnown: "not checked" as "yes" | "no" | "not checked",
+    productSource: "not checked" as "supabase" | "local-fallback" | "not checked",
     liveBarcodeAttempts: 0,
     lastBarcodeDecodeStatus: "searching" as "searching" | "detected",
     ocrAttempts: 0,
@@ -399,7 +400,7 @@ export function useAssistant(
             return;
           const code = found.getText();
           if (!gate.current.accept(`lookup:${code}`)) return;
-          setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "not checked" }));
+          setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "not checked", productSource: "not checked" }));
           phaseTo("processing");
           setCameraGuidance("Barcode detected. Checking this product.");
           void announce("Barcode detected. Checking this product.", 1, true).then(async () => {
@@ -407,7 +408,7 @@ export function useAssistant(
             const resolved = await resolveProductByBarcode(code);
             if (epoch !== generation.current || !mounted.current) return;
             if (resolved.status === "found") {
-              setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "yes" }));
+              setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "yes", productSource: resolved.source }));
               actions.current?.check({
                 barcode: code,
                 product: resolved.product,
@@ -420,7 +421,7 @@ export function useAssistant(
               });
               return;
             }
-            setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "no" }));
+            setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "no", productSource: "not checked" }));
             const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
             setCameraGuidance(instruction);
             await announce(instruction, 1, true);
@@ -543,6 +544,7 @@ export function useAssistant(
     }
     setDiagnostics(d => ({ ...d, barcode: snapshotBarcode ?? null,
       barcodeKnown: "not checked",
+      productSource: "not checked",
       verification: "not checked" }));
     setResult(null);
     ocrBusy.current = true;
@@ -562,7 +564,7 @@ export function useAssistant(
         const resolved = await resolveProductByBarcode(snapshotBarcode);
         if (epoch !== generation.current || !mounted.current) return;
         if (resolved.status === "found") {
-          setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "yes" }));
+          setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "yes", productSource: resolved.source }));
           setCameraGuidance("Barcode detected. Checking this product.");
           if (!gate.current.accept(`barcode:${snapshotBarcode}`)) { phaseTo("awaiting-next-item"); return; }
           await announce("Barcode detected. Checking this product.", 1, true);
@@ -580,7 +582,7 @@ export function useAssistant(
           return;
         }
         snapshotProductLookup = resolved.status === "not-found" ? "not-found" : "unresolved";
-        setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "no" }));
+        setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "no", productSource: "not checked" }));
         const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
         setCameraGuidance(instruction);
         await announce(instruction, 1, true);
