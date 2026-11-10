@@ -3,7 +3,6 @@ import type { DecodeHintType as DecodeHint, BarcodeFormat as RetailFormat } from
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   verify,
-  isKnownBarcode,
   recordAttempt,
   undoAttempt,
   progress,
@@ -16,6 +15,7 @@ import {
   type Attempt,
 } from "./engine";
 import { scanFeedback } from "./scan-feedback";
+import { resolveProductByBarcode } from "./product-catalog";
 import { deliveryCameraConstraints, focusCamera, OcrReader } from "./media";
 import { analyzeFrame, BoundedAutomaticRead, AutomaticOcrViews, CameraGuidance, GuidanceAnnouncements, GUIDANCE } from "./camera-guidance";
 import { orderStorage } from "./order-storage";
@@ -398,33 +398,36 @@ export function useAssistant(
           )
             return;
           const code = found.getText();
-          setDiagnostics(d => d.barcode === code ? d : ({ ...d, barcode: code, barcodeKnown: isKnownBarcode(code) ? "yes" : "no" }));
-          if (!isKnownBarcode(code)) {
-            if (!ocrViews.current.canAttempt() || !gate.current.accept(`unknown:${code}`)) return;
-            phaseTo("processing");
-            const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
-            setCameraGuidance(instruction);
-            void announce(instruction, 1, true).then(() => {
-              if (epoch !== generation.current || !mounted.current) return;
-              phaseTo("scanning");
-              void actions.current?.ocr(true);
-            });
-            return;
-          }
-          if (gate.current.accept(`barcode:${code}`)) {
-            setCameraGuidance("Barcode detected. Checking this product.");
-            void announce("Barcode detected. Checking this product.", 1, true).then(() => {
-              if (epoch !== generation.current || !mounted.current) return;
+          if (!gate.current.accept(`lookup:${code}`)) return;
+          setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "not checked" }));
+          phaseTo("processing");
+          setCameraGuidance("Barcode detected. Checking this product.");
+          void announce("Barcode detected. Checking this product.", 1, true).then(async () => {
+            if (epoch !== generation.current || !mounted.current) return;
+            const resolved = await resolveProductByBarcode(code);
+            if (epoch !== generation.current || !mounted.current) return;
+            if (resolved.status === "found") {
+              setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "yes" }));
               actions.current?.check({
                 barcode: code,
+                product: resolved.product,
+                productSource: resolved.source,
+                productLookup: "resolved",
                 captureId: newId(),
                 sessionId: sessionId.current,
                 source: "barcode",
                 presentationId: `${sessionId.current}:${gate.current.epoch}`,
               });
-            });
-            phaseTo("processing");
-          }
+              return;
+            }
+            setDiagnostics(d => ({ ...d, barcode: code, barcodeKnown: "no" }));
+            const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
+            setCameraGuidance(instruction);
+            await announce(instruction, 1, true);
+            if (epoch !== generation.current || !mounted.current) return;
+            phaseTo("scanning");
+            void actions.current?.ocr(true);
+          });
         },
       );
       if (epoch !== generation.current) {
@@ -539,7 +542,7 @@ export function useAssistant(
       /* This frame need not contain a readable barcode. */
     }
     setDiagnostics(d => ({ ...d, barcode: snapshotBarcode ?? null,
-      barcodeKnown: snapshotBarcode ? isKnownBarcode(snapshotBarcode) ? "yes" : "no" : "not checked",
+      barcodeKnown: "not checked",
       verification: "not checked" }));
     setResult(null);
     ocrBusy.current = true;
@@ -553,16 +556,31 @@ export function useAssistant(
     ocrRecovery.current = "";
     phaseTo("processing");
     if (automatic) setCameraGuidance(GUIDANCE.ready);
+    let snapshotProductLookup: Evidence["productLookup"] | undefined;
     try {
-      if (snapshotBarcode && isKnownBarcode(snapshotBarcode)) {
-        setCameraGuidance("Barcode detected. Checking this product.");
-        if (!gate.current.accept(`barcode:${snapshotBarcode}`)) { phaseTo("awaiting-next-item"); return; }
-        await announce("Barcode detected. Checking this product.", 1, true);
-        if (epoch !== generation.current || !mounted.current) return;
-        check({ barcode: snapshotBarcode, source: "barcode", captureId: newId(), sessionId: sessionId.current, presentationId });
-        return;
-      }
       if (snapshotBarcode) {
+        const resolved = await resolveProductByBarcode(snapshotBarcode);
+        if (epoch !== generation.current || !mounted.current) return;
+        if (resolved.status === "found") {
+          setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "yes" }));
+          setCameraGuidance("Barcode detected. Checking this product.");
+          if (!gate.current.accept(`barcode:${snapshotBarcode}`)) { phaseTo("awaiting-next-item"); return; }
+          await announce("Barcode detected. Checking this product.", 1, true);
+          if (epoch !== generation.current || !mounted.current) return;
+          check({
+            barcode: snapshotBarcode,
+            product: resolved.product,
+            productSource: resolved.source,
+            productLookup: "resolved",
+            source: "barcode",
+            captureId: newId(),
+            sessionId: sessionId.current,
+            presentationId,
+          });
+          return;
+        }
+        snapshotProductLookup = resolved.status === "not-found" ? "not-found" : "unresolved";
+        setDiagnostics(d => ({ ...d, barcode: snapshotBarcode!, barcodeKnown: "no" }));
         const instruction = "I read the barcode, but I do not know this product from the barcode alone. Turn the package so I can read the product label.";
         setCameraGuidance(instruction);
         await announce(instruction, 1, true);
@@ -618,6 +636,7 @@ export function useAssistant(
       check({
         ...observed,
         barcode: snapshotBarcode,
+        productLookup: snapshotProductLookup,
         presentationId,
         captureId: newId(),
         sessionId: sessionId.current,
@@ -676,7 +695,13 @@ export function useAssistant(
     const verdict = verify(comparable, evidence);
     setDiagnostics(d => ({ ...d,
       barcode: evidence.barcode ?? null,
-      barcodeKnown: evidence.barcode ? isKnownBarcode(evidence.barcode) ? "yes" : "no" : "not checked",
+      barcodeKnown: evidence.barcode
+        ? evidence.productLookup === "resolved"
+          ? "yes"
+          : evidence.productLookup === "not-found"
+            ? "no"
+            : d.barcodeKnown
+        : "not checked",
       verification: verdict.status === "MATCH" ? "match" : verdict.status === "MISMATCH" ? "mismatch" : "unable",
     }));
     // A user-requested retry identifies the unit slot, not the observed product fields.
