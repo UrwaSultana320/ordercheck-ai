@@ -18,9 +18,15 @@ export function scanFeedback(verdict: Verdict, state: CheckState) {
   const field = (name: string) =>
     verdict.fields?.find(field => field.field === name)?.observed;
 
-  const receivedProduct = [field("brand"), field("name")].filter(Boolean).join(" ");
-  const receivedVariant = field("variant") ?? "";
-  const receivedSize = field("size") ?? "";
+  const receivedBrand =
+    field("brand") ?? (verdict.status === "MATCH" ? item?.brand : undefined);
+  const receivedName =
+    field("name") ?? (verdict.status === "MATCH" ? item?.name : undefined);
+  const receivedProduct = [receivedBrand, receivedName].filter(Boolean).join(" ");
+  const receivedVariant =
+    field("variant") ?? (verdict.status === "MATCH" ? item?.variant : "") ?? "";
+  const receivedSize =
+    field("size") ?? (verdict.status === "MATCH" ? item?.size : "") ?? "";
   const receivedDisplay = compact([
     receivedProduct || undefined,
     receivedVariant || undefined,
