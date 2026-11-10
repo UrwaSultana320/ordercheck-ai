@@ -309,7 +309,7 @@ export default function Home() {
             <h1 id="hero-heading" tabIndex={-1}>
               Know what arrived.
               <br />
-              <span>Without depending on sight.</span>
+              <span>Without depending <em>on sight.</em></span>
             </h1>
             <p className="intro">
               A voice-first delivery assistant that helps you describe your
@@ -330,6 +330,16 @@ export default function Home() {
               Built around your voice. Buttons and keyboard are always
               available.
             </p>
+            <div className="hero-box" aria-hidden="true">
+              <svg viewBox="0 0 200 200" fill="none">
+                <path d="M26 65 100 25 174 65 100 107Z" fill="#C27A4A" />
+                <path d="M26 65 100 107 100 181 26 139Z" fill="#A9633B" />
+                <path d="M100 107 174 65 174 139 100 181Z" fill="#5A3825" />
+                <path d="M66 43 140 85 140 113 126 121 126 93 52 51Z" fill="#D49A68" />
+                <path d="M26 65 100 107 174 65M100 107V181" stroke="#E8E2D9" strokeOpacity=".35" />
+                <path d="m55 119 12 13 24-25" stroke="#E8E2D9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
           </section>
           <section className="steps" aria-label="How OrderCheck works">
             {[
@@ -620,7 +630,7 @@ export default function Home() {
                         </div>
                         <span>
                           {i.quantity !== null && (
-                            <span>Quantity: {i.quantity}. </span>
+                            <span className="quantity">Quantity: {i.quantity}. </span>
                           )}
                         </span>
                       </div>
