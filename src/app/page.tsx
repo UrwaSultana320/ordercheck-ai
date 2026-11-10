@@ -1173,6 +1173,7 @@ export default function Home() {
               </p>
               <p>Barcode detected: {a.diagnostics.barcode ?? "none"}</p>
               <p>Barcode known: {a.diagnostics.barcodeKnown}</p>
+              <p>Product source: {a.diagnostics.productSource}</p>
               <p>
                 OCR attempted: {a.diagnostics.ocrAttempts > 0 ? "yes" : "no"}
               </p>
