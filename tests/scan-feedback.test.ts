@@ -26,4 +26,54 @@ describe("human scan feedback", () => {
     const data = state(1, 1); Object.assign(data.orders[0].items[0], { brand: "Everyday", name: "Oat drink", variant: "Original", size: "1 L" });
     expect(scanFeedback({ ...verdict, fields: [] }, data).spoken).toContain("Everyday Oat drink, Original, 1 litre");
   });
+
+  it("speaks ordered and received variants separately on a mismatch", () => {
+    const data = state(1, 0);
+    data.orders[0].items[0].variant = "Aloe Vera";
+    const mismatch: Verdict = {
+      status: "MISMATCH",
+      reason: "DIFFERENT_PRODUCT",
+      message: "Internal mismatch",
+      orderId: "order",
+      itemId: "item",
+      fields: [
+        { field: "brand", observed: "LOVE JOJO", source: "product database / capture" },
+        { field: "name", observed: "Body Lotion", source: "product database / capture" },
+        { field: "variant", observed: "Vitamin C Whitening", source: "product database / capture" },
+        { field: "size", observed: "500 ml", source: "product database / capture" },
+      ],
+    };
+    const feedback = scanFeedback(mismatch, data);
+    expect(feedback.lines).toContain(
+      "Ordered: LOVE JOJO Body Lotion, Aloe Vera, 500 ml.",
+    );
+    expect(feedback.lines).toContain(
+      "Received: LOVE JOJO Body Lotion, Vitamin C Whitening, 500 ml.",
+    );
+    expect(feedback.spoken).toContain(
+      "You ordered LOVE JOJO Body Lotion, Aloe Vera, 500 millilitres.",
+    );
+    expect(feedback.spoken).toContain(
+      "You received LOVE JOJO Body Lotion, Vitamin C Whitening, 500 millilitres.",
+    );
+    expect(feedback.spoken).toContain("Nothing was counted.");
+  });
+
+  it("speaks the exact received variant and size on a successful match", () => {
+    const match: Verdict = {
+      ...verdict,
+      fields: [
+        { field: "brand", observed: "LOVE JOJO", source: "product database / capture" },
+        { field: "name", observed: "Body Lotion", source: "product database / capture" },
+        { field: "variant", observed: "Vitamin C Whitening", source: "product database / capture" },
+        { field: "size", observed: "500 ml", source: "product database / capture" },
+      ],
+    };
+    const feedback = scanFeedback(match, state(1, 1));
+    expect(feedback.spoken).toContain(
+      "You received LOVE JOJO Body Lotion, Vitamin C Whitening, 500 millilitres.",
+    );
+    expect(feedback.spoken).toContain("They match.");
+  });
+
 });
